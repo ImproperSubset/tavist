@@ -1,0 +1,44 @@
+def print_roll_with_dice(prefix: str, roll: Roll, results: Result):
+    print(f'{prefix}  {results.total:>2} = {roll.num}d{roll.sides}', end='')
+    if roll.bonus:
+        print(f'{roll.bonus}', end='')
+    print(f' = {[d for d in results.dice]}', end='')
+    if roll.bonus:
+        print(f'{roll.bonus}', end='')
+    print()
+
+
+def make_roller(roll: object):
+    def do_roll():
+        def do_roll(roll, prefix):
+            match roll:
+                case AttackRoll():
+                    total = 0
+                    print(f'{prefix}Attack:')
+                    for r in roll.rolls:
+                        results = r.roll()
+                        if r.sides > 0:
+                            print_roll_with_dice(prefix, r, results)
+                        elif r.bonus != 0:
+                            print(f'{prefix}      {results.bonus:+}')
+                        total += results.total
+                    print(
+                        f'{prefix}  Hit AC {total}')
+                case DamageRoll():
+                    total = 0
+                    print(f'{prefix}Damage:')
+                    for r in roll.rolls:
+                        results = r.roll()
+                        print(
+                            f'{prefix}  {r.num}d{r.sides}{r.bonus:+} = {[d for d in results.dice]} {r.bonus:+} = {results.total} [{damage_type(r.tags)}]')
+                        total += results.total
+                    print(f'{prefix}  Total Damage = {total}')
+                case RollSequence():
+                    print(f'{prefix}{roll.tags[0]}:')
+                    prefix += '  '
+                    for r in roll.rolls:
+                        do_roll(r, prefix)
+
+        do_roll(roll, '')
+
+    return do_roll
