@@ -30,6 +30,15 @@ class MainWindow(QMainWindow):
         poweratt_group = QGroupBox("Power Attack:")
         poweratt_group.setLayout(poweratt_layout)
 
+        expertise_layout = QHBoxLayout()
+        self.expertise = QLineEdit()
+        self.expertise.setText("")
+        self.expertise.setInputMask("00")
+        expertise_layout.addWidget(QLabel("Combat Expertise:"))
+        expertise_layout.addWidget(self.expertise)
+        expertise_group = QGroupBox("Combat Expertise:")
+        expertise_group.setLayout(expertise_layout)
+
         status_layout = QHBoxLayout()
 
         self.evil = QPushButton()
@@ -63,6 +72,7 @@ class MainWindow(QMainWindow):
 
         main_layout = QVBoxLayout()
         main_layout.addWidget(poweratt_group)
+        main_layout.addWidget(expertise_group)
         main_layout.addWidget(status_group)
         main_layout.addWidget(katana_group)
         main_layout.addWidget(wakasashi_group)
@@ -199,9 +209,9 @@ class AttackAction():
             print(f"]", end='')
         for bonus in attack_roll.bonuses:
             if bonus.type != BonusType.UNNAMED:
-                print(f" {bonus.type.value}",end='')
+                print(f" {bonus.type.value}", end='')
             else:
-                print(f" {bonus.label}",end='')
+                print(f" {bonus.label}", end='')
             print(f"[{bonus.bonus:+}]", end='')
         print()
 
@@ -223,9 +233,9 @@ class AttackAction():
             if idx != 0:
                 print(" + ", end='')
             if bonus.type != BonusType.UNNAMED:
-                print(f"{bonus.type.value}",end='')
+                print(f"{bonus.type.value}", end='')
             else:
-                print(f"{bonus.label}",end='')
+                print(f"{bonus.label}", end='')
             print(f"[{bonus.bonus:+}]", end='')
         if critical:
             print(" )*2", end='')
@@ -242,6 +252,7 @@ class Tavist():
         self.poweratt_attack_penalty: Bonus = Bonus(
             type=BonusType.POWER_ATTACK, label='power attack')
         self.bab = Bonus(12, BonusType.BAB)
+        self.combat_expertise = Bonus(0, label="expertise")
 
         self.holy_dice: DamageDice = DamageDice(n=2, d=6, label='holy')
         self.surge_bonus: Bonus = Bonus(bonus=4, label='power-surge')
@@ -249,6 +260,7 @@ class Tavist():
         tavist_melee_attack_bonus = [
             Bonus(4, BonusType.ABILITY),
             self.bab,
+            self.combat_expertise,
             Bonus(-2, BonusType.TWO_WEAPONS),
             self.poweratt_attack_penalty
         ]
@@ -366,8 +378,9 @@ def wrap_attack(attack: AttackAction):
     return do_attack
 
 
-def wrap_bonus_adjustment(bonus: Bonus, value: int):
+def wrap_bonus_adjustment(attack: AttackAction, name: str, bonus: Bonus, value: int):
     def bonus_adjustment():
+        attack.label = name
         bonus.bonus = value
     return bonus_adjustment
 
@@ -377,15 +390,17 @@ def main() -> None:
     window = MainWindow()
 
     tavist = Tavist()
-    
-    attacks = [12,12,7,2]
-    attack_names=['first','speed','second','third']
+
+    attacks = [12, 12, 7, 2]
+    attack_names = ['first', 'speed', 'second', 'third']
     for idx, attack in enumerate(window.katana_attacks):
-        attack.clicked.connect(wrap_bonus_adjustment(tavist.bab,attacks[idx]))
+        attack.clicked.connect(wrap_bonus_adjustment(
+            tavist.katana_attack_action, attack_names[idx], tavist.bab, attacks[idx]))
         attack.clicked.connect(wrap_attack(tavist.katana_attack_action))
         attack.setText(attack_names[idx])
 
-    window.wakasashi_attack.clicked.connect(wrap_bonus_adjustment(tavist.bab,12))
+    window.wakasashi_attack.clicked.connect(
+        wrap_bonus_adjustment(tavist.wakasashi_attack_action,'off-hand',tavist.bab, 12))
     window.wakasashi_attack.clicked.connect(
         wrap_attack(tavist.wakasashi_attack_action))
     window.wakasashi_attack.setText(tavist.wakasashi_attack_action.label)
@@ -402,6 +417,9 @@ def main() -> None:
         make_damage_update(tavist.poweratt_damage_bonus))
     window.poweratt.textChanged.connect(
         make_attack_update(tavist.poweratt_attack_penalty))
+
+    window.expertise.textChanged.connect(
+        make_attack_update(tavist.combat_expertise))
 
     window.show()
     app.exec()
