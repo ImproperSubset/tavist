@@ -434,6 +434,53 @@ def test_tracking_dialog_crit_confirm_logic(monkeypatch):
     qapp.quit()
 
 
+def test_tracking_dialog_prompts_on_confirm_within_bounds(monkeypatch):
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+    import main as app_main
+
+    qapp = QApplication.instance() or QApplication([])
+    called = {"count": 0}
+
+    def fake_exec(self):
+        called["count"] += 1
+        # click the only button (crit threat with confirm in range)
+        for btn in self.findChildren(QPushButton):
+            if "(AC 30)" in btn.text():
+                btn.click()
+                break
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", fake_exec)
+
+    window = app_main.MainWindow()
+    tavist = app_main.Tavist()
+    tracker = app_main.ACTargetTracker()
+    tracker.lower = 17
+    tracker.upper = 20
+    results = [
+        {"label": "crit", "attack_total": 30, "damage_normal": 5, "damage_critical": 11, "threat": True, "confirm_total": 18},
+    ]
+
+    app_main.tracking_dialog(window, tavist, tracker, results, [12, 12, 7, 2], ["first", "speed", "second", "third"])
+
+    assert called["count"] == 1
+    # upper should tighten to confirm total
+    assert tracker.upper == 18
+    assert tracker.damage_done == 11
+    qapp.quit()
+
+
+def test_accumulate_known_hits_uses_confirm_for_damage():
+    from tavist.tracking import ACTargetTracker, accumulate_known_hits
+
+    tracker = ACTargetTracker(lower=0, upper=18, damage_done=0)
+    results = [{"attack_total": 30, "confirm_total": 25, "damage_normal": 5, "damage_critical": 11, "threat": True}]
+    accumulate_known_hits(tracker, results)
+    assert tracker.damage_done == 11
+
+
 def test_new_opponent_resets_damage(monkeypatch):
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"

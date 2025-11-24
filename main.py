@@ -31,6 +31,12 @@ from tavist.model import (
     expected_full_attack,
     recommend_setup,
 )
+from tavist.tracking import (
+    ACTargetTracker,
+    format_bound,
+    accumulate_known_hits,
+    damage_for_hit,
+)
 
 
 class MainWindow(QMainWindow):
@@ -265,29 +271,6 @@ def append_log(window: MainWindow, text: str):
     cursor.movePosition(QTextCursor.End)
     window.log_output.setTextCursor(cursor)
     window.log_output.ensureCursorVisible()
-
-
-class ACTargetTracker:
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.lower = 0  # AC is > lower
-        self.upper = 99  # AC is <= upper
-        self.damage_done = 0
-
-    def record_hit(self, attack_total: int):
-        self.upper = min(self.upper, attack_total)
-
-    def record_miss(self, attack_total: int):
-        self.lower = max(self.lower, attack_total)
-
-    def estimate(self) -> int:
-        if self.upper == 99:
-            return self.lower
-        if (self.upper - self.lower) <= 1:
-            return self.upper
-        return (self.lower + self.upper + 1) // 2
 
 
 def perform_attack_with_log(attack: AttackAction, window: MainWindow):
@@ -552,23 +535,15 @@ def apply_external(window: MainWindow, tavist: Tavist, attacks: list[int], attac
     update_dpr_label(window, tavist, attacks, attack_names)
 
 
-def format_bound(tracker: ACTargetTracker) -> str:
-    if tracker.upper != 99 and (tracker.upper - tracker.lower) <= 1:
-        return f"== {tracker.upper}"
-    return f">{tracker.lower}, ≤{tracker.upper if tracker.upper != 99 else '?'}"
-
-def accumulate_known_hits(tracker: ACTargetTracker, results: list[dict]):
-    if tracker.upper == 99:
-        return
-    for r in results:
-        if r["attack_total"] >= tracker.upper and r["attack_total"] <= tracker.upper:
-            tracker.damage_done += r.get("damage_normal", 0)
-
-
 def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker, results: list[dict], attacks: list[int], attack_names: list[str]):
     if tracker.upper != 99 and (tracker.upper - tracker.lower) <= 1:
         return False
-    candidates = [r for r in results if tracker.lower < r["attack_total"] < tracker.upper]
+    candidates = [
+        r
+        for r in results
+        if (tracker.lower < r["attack_total"] < tracker.upper)
+        or (r.get("confirm_total") and tracker.lower < r["confirm_total"] < tracker.upper)
+    ]
     if not candidates:
         return False
 
@@ -615,10 +590,9 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
             chosen = selection["total"]
             for r in candidates:
                 if r["attack_total"] >= chosen:
-                    tracker.record_hit(r["attack_total"])
-                    # If crit confirm meets bound, count crit damage; otherwise normal
-                    use_crit = r.get("threat") and r.get("confirm_total") and r["confirm_total"] >= tracker.upper
-                    tracker.damage_done += r.get("damage_critical" if use_crit else "damage_normal", 0)
+                    hit_cap = r.get("confirm_total") or r["attack_total"]
+                    tracker.record_hit(hit_cap)
+                    tracker.damage_done += damage_for_hit(r, tracker.upper)
                 else:
                     tracker.record_miss(r["attack_total"])
         est = tracker.estimate()
