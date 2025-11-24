@@ -87,6 +87,9 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(katana_group)
         main_layout.addWidget(wakasashi_group)
 
+        self.full_attack = QPushButton("Full Attack")
+        main_layout.addWidget(self.full_attack)
+
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMinimumHeight(160)
@@ -212,51 +215,70 @@ class AttackAction:
 
     def do_attack(self):
         attack_roll = self.attack.roll()
-        print(f"Attack[{self.label}] hits AC: {attack_roll.total}", end="")
         attack_die = attack_roll.rolls[0][0]
-        critical = attack_die >= self.attack.critical_threshold
-        if critical:
-            print(" CRITICAL HIT!", end="")
-        print()
+        threat = attack_die >= self.attack.critical_threshold
+        confirm_roll = self.attack.roll() if threat else None
 
-        for idx, die in enumerate(attack_roll.dice):
-            print(f"  {die.label}[", end="")
-            print(f"d{die.d}({attack_roll.rolls[idx]})", end="")
-            print(f"]", end="")
+        damage_roll = self.damage.roll(critical=False)
+        attack_mods = []
         for bonus in attack_roll.bonuses:
-            if bonus.type != BonusType.UNNAMED:
-                print(f" {bonus.type.value}", end="")
-            else:
-                print(f" {bonus.label}", end="")
-            print(f"[{bonus.bonus:+}]", end="")
-        print()
+            name = bonus.type.value if bonus.type != BonusType.UNNAMED else bonus.label or "unnamed"
+            attack_mods.append(f"{name}[{bonus.bonus:+}]")
+        attack_mods_text = " + ".join(attack_mods) if attack_mods else "no modifiers"
 
-        damage_roll = self.damage.roll(critical)
-        print(f"Damage {damage_roll.total}")
-        print("  ", end="")
+        damage_dice_parts = []
         for idx, die in enumerate(damage_roll.dice):
-            if idx != 0:
-                print(" + ", end="")
-            print(f"{die.label}[", end="")
-            print(f"d{die.d}({damage_roll.rolls[idx]})", end="")
-            print(f"]", end="")
-            if critical and idx == 0:
-                print("*2", end="")
-        print(" + ", end="")
-        if critical:
-            print("( ", end="")
-        for idx, bonus in enumerate(damage_roll.bonuses):
-            if idx != 0:
-                print(" + ", end="")
-            if bonus.type != BonusType.UNNAMED:
-                print(f"{bonus.type.value}", end="")
-            else:
-                print(f"{bonus.label}", end="")
-            print(f"[{bonus.bonus:+}]", end="")
-        if critical:
-            print(" )*2", end="")
+            rolls = ",".join(str(r) for r in damage_roll.rolls[idx])
+            crit_tag = " *2 on crit" if isinstance(die, WeaponDamageDice) else ""
+            damage_dice_parts.append(f"{die.label}: d{die.d}({rolls}){crit_tag}")
+        damage_dice_text = " | ".join(damage_dice_parts) if damage_dice_parts else "none"
+
+        damage_bonus_parts = []
+        for bonus in damage_roll.bonuses:
+            name = bonus.type.value if bonus.type != BonusType.UNNAMED else bonus.label or "unnamed"
+            damage_bonus_parts.append(f"{name}[{bonus.bonus:+}] *2 on crit")
+        damage_bonus_text = " + ".join(damage_bonus_parts) if damage_bonus_parts else "none"
+
+        damage_base = 0
+        damage_crit = 0
+        for idx, die in enumerate(damage_roll.dice):
+            die_sum = sum(damage_roll.rolls[idx])
+            damage_base += die_sum
+            damage_crit += die_sum * (2 if isinstance(die, WeaponDamageDice) else 1)
+        bonus_base = sum(b.bonus for b in damage_roll.bonuses)
+        bonus_crit = sum(b.bonus * 2 for b in damage_roll.bonuses)
+        damage_base += bonus_base
+        damage_crit += bonus_crit
+
+        lines = [
+            f"=== Attack: {self.label} ===",
+            f"Attack total: {attack_roll.total} (d20={attack_die}{' CRIT THREAT' if threat else ''})",
+            f"Attack mods: {attack_mods_text}",
+        ]
+        if threat and confirm_roll is not None:
+            lines.append(
+                f"Confirm roll: {confirm_roll.total} (crit confirms on AC ≤ {confirm_roll.total})"
+            )
+        else:
+            lines.append("No critical threat")
+
+        lines += [
+            f"Damage (normal): {damage_base}",
+            f"Damage (critical): {damage_crit} (if confirmed)",
+            f"Damage dice: {damage_dice_text}",
+            f"Damage mods: {damage_bonus_text}",
+        ]
+        print("\n".join(lines))
         print()
-        print()
+        return {
+            "label": self.label,
+            "attack_total": attack_roll.total,
+            "attack_die": attack_die,
+            "threat": threat,
+            "confirm_total": confirm_roll.total if confirm_roll else None,
+            "damage_normal": damage_base,
+            "damage_critical": damage_crit,
+        }
 
 
 class Tavist:
@@ -412,18 +434,111 @@ def append_log(window: MainWindow, text: str):
     window.log_output.ensureCursorVisible()
 
 
-def wrap_attack_with_log(attack: AttackAction, window: MainWindow):
+def perform_attack_with_log(attack: AttackAction, window: MainWindow):
     def do_attack():
         writer = DualWriter()
         with redirect_stdout(writer):
-            attack.do_attack()
+            result = attack.do_attack()
         log_text = writer.text().rstrip()
         if log_text:
-            append_log(window, f"[{attack.label}]")
             append_log(window, log_text)
             append_log(window, "")
+        return result
 
     return do_attack
+
+
+def compute_damage_for_ac(results: list[dict], ac: int) -> int:
+    total = 0
+    for r in results:
+        if ac > r["attack_total"]:
+            continue
+        if r["threat"] and r["confirm_total"] is not None and ac <= r["confirm_total"]:
+            total += r["damage_critical"]
+        else:
+            total += r["damage_normal"]
+    return total
+
+
+def summarize_damage_ranges(results: list[dict]) -> list[tuple[int | None, int, int]]:
+    """
+    Returns list of (lower_exclusive, upper_inclusive, damage).
+    lower_exclusive is None for the lowest band; (upper, None, damage) means AC > upper.
+    """
+    thresholds = set()
+    for r in results:
+        thresholds.add(r["attack_total"])
+        if r.get("confirm_total"):
+            thresholds.add(r["confirm_total"])
+    if not thresholds:
+        return []
+    ordered = sorted(thresholds, reverse=True)
+    raw_ranges: list[tuple[int | None, int | None, int]] = []
+
+    top = ordered[0]
+    raw_ranges.append((top, None, 0))  # AC > top
+
+    for idx, upper in enumerate(ordered):
+        lower = ordered[idx + 1] if idx + 1 < len(ordered) else None
+        dmg = compute_damage_for_ac(results, upper)
+        raw_ranges.append((lower, upper, dmg))
+
+    merged: list[tuple[int | None, int | None, int]] = []
+    for lower, upper, dmg in raw_ranges:
+        if merged and merged[-1][2] == dmg and merged[-1][1] is not None and upper is not None:
+            prev_lower, prev_upper, _ = merged[-1]
+            merged[-1] = (lower, prev_upper, dmg)
+        else:
+            merged.append((lower, upper, dmg))
+
+    # normalize order: descending upper
+    merged_sorted = sorted(merged, key=lambda x: (-1 if x[1] is None else -x[1]))
+    return merged_sorted
+
+
+def wrap_full_attack(
+    window: MainWindow, tavist: "Tavist", attack_names: list[str], attacks: list[int]
+):
+    def do_full_attack():
+        append_log(window, "=== Full Attack ===")
+        results: list[dict] = []
+
+        for idx, bonus in enumerate(attacks):
+            wrap_bonus_adjustment(
+                tavist.katana_attack_action, attack_names[idx], tavist.bab, bonus
+            )()
+            results.append(perform_attack_with_log(tavist.katana_attack_action, window)())
+
+        wrap_bonus_adjustment(tavist.wakasashi_attack_action, "off-hand", tavist.bab, 12)()
+        results.append(perform_attack_with_log(tavist.wakasashi_attack_action, window)())
+
+        ranges = summarize_damage_ranges(results)
+        if ranges:
+            append_log(window, "--- Damage by AC ---")
+            for lower, upper, damage in ranges:
+                if upper is None and lower is not None:
+                    append_log(window, f"AC > {lower}: {damage} dmg")
+                elif lower is None:
+                    append_log(window, f"AC ≤ {upper}: {damage} dmg")
+                else:
+                    append_log(window, f"{lower} < AC ≤ {upper}: {damage} dmg")
+        if results:
+            append_log(window, "--- Per attack ---")
+            for r in results:
+                if r["threat"] and r["confirm_total"] is not None:
+                    append_log(
+                        window,
+                        f"{r['label']}: attack {r['attack_total']} | threat (crit confirms on AC ≤ {r['confirm_total']}) "
+                        f"normal {r['damage_normal']} dmg / crit {r['damage_critical']} dmg",
+                    )
+                else:
+                    append_log(
+                        window,
+                        f"{r['label']}: attack {r['attack_total']} | damage {r['damage_normal']} dmg",
+                    )
+        append_log(window, "")
+
+    return do_full_attack
 
 
 def main() -> None:
@@ -440,7 +555,7 @@ def main() -> None:
                 tavist.katana_attack_action, attack_names[idx], tavist.bab, attacks[idx]
             )
         )
-        attack.clicked.connect(wrap_attack_with_log(tavist.katana_attack_action, window))
+        attack.clicked.connect(perform_attack_with_log(tavist.katana_attack_action, window))
         attack.setText(attack_names[idx])
 
     window.wakasashi_attack.clicked.connect(
@@ -449,9 +564,13 @@ def main() -> None:
         )
     )
     window.wakasashi_attack.clicked.connect(
-        wrap_attack_with_log(tavist.wakasashi_attack_action, window)
+        perform_attack_with_log(tavist.wakasashi_attack_action, window)
     )
     window.wakasashi_attack.setText(tavist.wakasashi_attack_action.label)
+
+    window.full_attack.clicked.connect(
+        wrap_full_attack(window, tavist, attack_names, attacks)
+    )
 
     window.evil.clicked.connect(
         make_dice_toggle(tavist.katana_damage, tavist.holy_dice)
