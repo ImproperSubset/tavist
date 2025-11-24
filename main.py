@@ -133,8 +133,10 @@ class MainWindow(QMainWindow):
         dpr_row = QHBoxLayout()
         self.dpr_label = QLabel("Expected DPR: —")
         self.ac_bound = QLabel("AC bound: ?>")
+        self.damage_done = QLabel("Damage done: 0")
         dpr_row.addWidget(self.dpr_label)
         dpr_row.addWidget(self.ac_bound)
+        dpr_row.addWidget(self.damage_done)
         dpr_row.addStretch()
         main_layout.addLayout(dpr_row)
 
@@ -272,6 +274,7 @@ class ACTargetTracker:
     def reset(self):
         self.lower = 0  # AC is > lower
         self.upper = 99  # AC is <= upper
+        self.damage_done = 0
 
     def record_hit(self, attack_total: int):
         self.upper = min(self.upper, attack_total)
@@ -489,6 +492,7 @@ def wrap_auto_recommend(
         tracker = getattr(window, "_ac_tracker", None)
         if tracker:
             tracker.reset()
+            window.damage_done.setText("Damage done: 0")
         pa, two = recommend_setup(tavist, ac, attacks, attack_names)
         tavist.set_two_handed(two)
         window.two_handed.setChecked(two)
@@ -531,6 +535,7 @@ def update_dpr_label(
     tracker = getattr(window, "_ac_tracker", None)
     if tracker:
         window.ac_bound.setText(f"AC bound: {format_bound(tracker)}")
+        window.damage_done.setText(f"Damage done: {tracker.damage_done}")
 
 
 def apply_external(window: MainWindow, tavist: Tavist, attacks: list[int], attack_names: list[str]):
@@ -552,13 +557,20 @@ def format_bound(tracker: ACTargetTracker) -> str:
         return f"== {tracker.upper}"
     return f">{tracker.lower}, ≤{tracker.upper if tracker.upper != 99 else '?'}"
 
+def accumulate_known_hits(tracker: ACTargetTracker, results: list[dict]):
+    if tracker.upper == 99:
+        return
+    for r in results:
+        if r["attack_total"] >= tracker.upper and r["attack_total"] <= tracker.upper:
+            tracker.damage_done += r.get("damage_normal", 0)
+
 
 def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker, results: list[dict], attacks: list[int], attack_names: list[str]):
     if tracker.upper != 99 and (tracker.upper - tracker.lower) <= 1:
-        return
-    candidates = [r for r in results if tracker.lower < r["attack_total"] <= tracker.upper]
+        return False
+    candidates = [r for r in results if tracker.lower < r["attack_total"] < tracker.upper]
     if not candidates:
-        return
+        return False
 
     dialog = QDialog(window)
     dialog.setWindowTitle("Attack Results")
@@ -599,6 +611,7 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
             for r in candidates:
                 if r["attack_total"] >= chosen:
                     tracker.record_hit(r["attack_total"])
+                    tracker.damage_done += r.get("damage_normal", 0)
                 else:
                     tracker.record_miss(r["attack_total"])
         est = tracker.estimate()
@@ -610,6 +623,8 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
             window,
             f"Updated AC bound: {format_bound(tracker)} (est {est})",
         )
+        return True
+    return False
 
 
 def main() -> None:
@@ -626,13 +641,19 @@ def main() -> None:
     def do_single():
         results = wrap_single_attack(window, tavist, attacks, attack_names)()
         if window.tracking.isChecked():
-            tracking_dialog(window, tavist, tracker, results, attacks, attack_names)
+            shown = tracking_dialog(window, tavist, tracker, results, attacks, attack_names)
+            if not shown:
+                accumulate_known_hits(tracker, results)
+                update_dpr_label(window, tavist, attacks, attack_names)
     window.attack_button.clicked.connect(do_single)
 
     def do_full():
         results = wrap_full_attack(window, tavist, attack_names, attacks)()
         if window.tracking.isChecked():
-            tracking_dialog(window, tavist, tracker, results, attacks, attack_names)
+            shown = tracking_dialog(window, tavist, tracker, results, attacks, attack_names)
+            if not shown:
+                accumulate_known_hits(tracker, results)
+        update_dpr_label(window, tavist, attacks, attack_names)
     window.full_attack.clicked.connect(do_full)
 
     def apply_two_handed(checked: bool):

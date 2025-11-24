@@ -248,6 +248,56 @@ def test_tracking_dialog_two_candidates_choose_low(monkeypatch):
     qapp.quit()
 
 
+def test_tracking_dialog_does_not_prompt_at_bound(monkeypatch):
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+    import main as app_main
+
+    qapp = QApplication.instance() or QApplication([])
+
+    called = {"count": 0}
+
+    def fake_exec(self):
+        called["count"] += 1
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", fake_exec)
+
+    window = app_main.MainWindow()
+    tavist = app_main.Tavist()
+    tracker = app_main.ACTargetTracker()
+    tracker.lower = 19
+    tracker.upper = 20
+    results = [{"label": "hit", "attack_total": 20, "damage_normal": 5}]
+
+    app_main.tracking_dialog(window, tavist, tracker, results, [12, 12, 7, 2], ["first", "speed", "second", "third"])
+    assert called["count"] == 0
+    # accumulator should count this as guaranteed
+    app_main.accumulate_known_hits(tracker, results)
+    assert tracker.damage_done == 5
+    qapp.quit()
+
+
+def test_accumulate_known_hits_when_solved(monkeypatch):
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    import main as app_main
+
+    qapp = QApplication.instance() or QApplication([])
+    tracker = app_main.ACTargetTracker()
+    tracker.lower = 19
+    tracker.upper = 20
+    results = [{"attack_total": 20, "damage_normal": 10}]
+
+    # dialog would not show; accumulate should count guaranteed hit
+    app_main.accumulate_known_hits(tracker, results)
+
+    assert tracker.damage_done == 10
+    qapp.quit()
+
+
 def test_power_attack_lock(monkeypatch):
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -312,4 +362,58 @@ def test_external_bonuses_applied(monkeypatch):
     # external str should reflect in damage ability bonuses
     assert tavist.ability_ext_main.bonus == 4
     assert tavist.ability_ext_off.bonus == 2
+    qapp.quit()
+
+
+def test_tracking_dialog_adds_damage(monkeypatch):
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+    import main as app_main
+
+    qapp = QApplication.instance() or QApplication([])
+
+    def fake_exec(self):
+        # click the lowest AC hit (AC 15)
+        for btn in self.findChildren(QPushButton):
+            if "(AC 15)" in btn.text():
+                btn.click()
+                break
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", fake_exec)
+
+    window = app_main.MainWindow()
+    tavist = app_main.Tavist()
+    tracker = app_main.ACTargetTracker()
+    tracker.lower = 0
+    tracker.upper = 30
+    results = [
+        {"label": "high", "attack_total": 25, "damage_normal": 10},
+        {"label": "low", "attack_total": 15, "damage_normal": 5},
+    ]
+
+    app_main.tracking_dialog(window, tavist, tracker, results, [12, 12, 7, 2], ["first", "speed", "second", "third"])
+
+    # Should accumulate only hits >= chosen (15 and 25)
+    assert tracker.damage_done == 15
+    qapp.quit()
+
+
+def test_new_opponent_resets_damage(monkeypatch):
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    import main as app_main
+
+    qapp = QApplication.instance() or QApplication([])
+    window = app_main.MainWindow()
+    tavist = app_main.Tavist()
+    tracker = app_main.ACTargetTracker()
+    tracker.damage_done = 20
+    window._ac_tracker = tracker
+    do_auto = app_main.wrap_auto_recommend(window, tavist, [12, 12, 7, 2], ["first", "speed", "second", "third"])
+    do_auto()
+    assert tracker.damage_done == 0
+    assert "0" in window.damage_done.text()
     qapp.quit()
