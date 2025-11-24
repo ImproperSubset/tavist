@@ -220,6 +220,8 @@ class AttackAction:
         confirm_roll = self.attack.roll() if threat else None
 
         damage_roll = self.damage.roll(critical=False)
+        damage_breakdown: dict[str, dict[str, int]] = {}
+        weapon_label = self.damage.type.value
         attack_mods = []
         for bonus in attack_roll.bonuses:
             name = bonus.type.value if bonus.type != BonusType.UNNAMED else bonus.label or "unnamed"
@@ -231,24 +233,44 @@ class AttackAction:
             rolls = ",".join(str(r) for r in damage_roll.rolls[idx])
             crit_tag = " *2 on crit" if isinstance(die, WeaponDamageDice) else ""
             damage_dice_parts.append(f"{die.label}: d{die.d}({rolls}){crit_tag}")
+            normal = sum(damage_roll.rolls[idx])
+            crit_val = normal * (2 if isinstance(die, WeaponDamageDice) else 1)
+            label = weapon_label if isinstance(die, WeaponDamageDice) else die.label or "damage"
+            bucket = damage_breakdown.setdefault(label, {"normal": 0, "critical": 0})
+            bucket["normal"] += normal
+            bucket["critical"] += crit_val
         damage_dice_text = " | ".join(damage_dice_parts) if damage_dice_parts else "none"
 
         damage_bonus_parts = []
         for bonus in damage_roll.bonuses:
-            name = bonus.type.value if bonus.type != BonusType.UNNAMED else bonus.label or "unnamed"
+            name = (
+                weapon_label
+                if bonus.type in (BonusType.ABILITY, BonusType.ENHANCEMENT)
+                else bonus.type.value
+                if bonus.type != BonusType.UNNAMED
+                else bonus.label
+                or "unnamed"
+            )
             damage_bonus_parts.append(f"{name}[{bonus.bonus:+}] *2 on crit")
+            bucket = damage_breakdown.setdefault(name, {"normal": 0, "critical": 0})
+            bucket["normal"] += bonus.bonus
+            bucket["critical"] += bonus.bonus * 2
         damage_bonus_text = " + ".join(damage_bonus_parts) if damage_bonus_parts else "none"
 
         damage_base = 0
         damage_crit = 0
-        for idx, die in enumerate(damage_roll.dice):
-            die_sum = sum(damage_roll.rolls[idx])
-            damage_base += die_sum
-            damage_crit += die_sum * (2 if isinstance(die, WeaponDamageDice) else 1)
-        bonus_base = sum(b.bonus for b in damage_roll.bonuses)
-        bonus_crit = sum(b.bonus * 2 for b in damage_roll.bonuses)
-        damage_base += bonus_base
-        damage_crit += bonus_crit
+        for values in damage_breakdown.values():
+            damage_base += values["normal"]
+            damage_crit += values["critical"]
+
+        breakdown_normal = {label: vals["normal"] for label, vals in damage_breakdown.items() if vals["normal"] != 0}
+        breakdown_critical = {label: vals["critical"] for label, vals in damage_breakdown.items() if vals["critical"] != 0}
+
+        def format_breakdown_map(mapping: dict[str, int]) -> str:
+            if not mapping:
+                return "none"
+            parts = [f"{k} {v}" for k, v in sorted(mapping.items())]
+            return ", ".join(parts)
 
         lines = [
             f"=== Attack: {self.label} ===",
@@ -265,6 +287,8 @@ class AttackAction:
         lines += [
             f"Damage (normal): {damage_base}",
             f"Damage (critical): {damage_crit} (if confirmed)",
+            f"Breakdown normal: {format_breakdown_map(breakdown_normal)}",
+            f"Breakdown critical: {format_breakdown_map(breakdown_critical)}",
             f"Damage dice: {damage_dice_text}",
             f"Damage mods: {damage_bonus_text}",
         ]
@@ -278,6 +302,8 @@ class AttackAction:
             "confirm_total": confirm_roll.total if confirm_roll else None,
             "damage_normal": damage_base,
             "damage_critical": damage_crit,
+            "breakdown_normal": breakdown_normal,
+            "breakdown_critical": breakdown_critical,
         }
 
 
@@ -448,19 +474,21 @@ def perform_attack_with_log(attack: AttackAction, window: MainWindow):
     return do_attack
 
 
-def compute_damage_for_ac(results: list[dict], ac: int) -> int:
+def compute_damage_for_ac(results: list[dict], ac: int) -> tuple[int, dict[str, int]]:
     total = 0
+    breakdown: dict[str, int] = {}
     for r in results:
         if ac > r["attack_total"]:
             continue
-        if r["threat"] and r["confirm_total"] is not None and ac <= r["confirm_total"]:
-            total += r["damage_critical"]
-        else:
-            total += r["damage_normal"]
-    return total
+        use_crit = r["threat"] and r["confirm_total"] is not None and ac <= r["confirm_total"]
+        parts = r["breakdown_critical"] if use_crit else r["breakdown_normal"]
+        for label, val in parts.items():
+            breakdown[label] = breakdown.get(label, 0) + val
+    total = sum(breakdown.values())
+    return total, breakdown
 
 
-def summarize_damage_ranges(results: list[dict]) -> list[tuple[int | None, int, int]]:
+def summarize_damage_ranges(results: list[dict]) -> list[tuple[int | None, int | None, int, dict[str, int]]]:
     """
     Returns list of (lower_exclusive, upper_inclusive, damage).
     lower_exclusive is None for the lowest band; (upper, None, damage) means AC > upper.
@@ -473,23 +501,29 @@ def summarize_damage_ranges(results: list[dict]) -> list[tuple[int | None, int, 
     if not thresholds:
         return []
     ordered = sorted(thresholds, reverse=True)
-    raw_ranges: list[tuple[int | None, int | None, int]] = []
+    raw_ranges: list[tuple[int | None, int | None, int, dict[str, int]]] = []
 
     top = ordered[0]
-    raw_ranges.append((top, None, 0))  # AC > top
+    raw_ranges.append((top, None, 0, {}))  # AC > top
 
     for idx, upper in enumerate(ordered):
         lower = ordered[idx + 1] if idx + 1 < len(ordered) else None
-        dmg = compute_damage_for_ac(results, upper)
-        raw_ranges.append((lower, upper, dmg))
+        dmg, breakdown = compute_damage_for_ac(results, upper)
+        raw_ranges.append((lower, upper, dmg, breakdown))
 
-    merged: list[tuple[int | None, int | None, int]] = []
-    for lower, upper, dmg in raw_ranges:
-        if merged and merged[-1][2] == dmg and merged[-1][1] is not None and upper is not None:
-            prev_lower, prev_upper, _ = merged[-1]
-            merged[-1] = (lower, prev_upper, dmg)
+    merged: list[tuple[int | None, int | None, int, dict[str, int]]] = []
+    for lower, upper, dmg, breakdown in raw_ranges:
+        if (
+            merged
+            and merged[-1][2] == dmg
+            and merged[-1][1] is not None
+            and upper is not None
+            and merged[-1][3] == breakdown
+        ):
+            prev_lower, prev_upper, _, bd = merged[-1]
+            merged[-1] = (lower, prev_upper, dmg, bd)
         else:
-            merged.append((lower, upper, dmg))
+            merged.append((lower, upper, dmg, breakdown))
 
     # normalize order: descending upper
     merged_sorted = sorted(merged, key=lambda x: (-1 if x[1] is None else -x[1]))
@@ -515,26 +549,39 @@ def wrap_full_attack(
         ranges = summarize_damage_ranges(results)
         if ranges:
             append_log(window, "--- Damage by AC ---")
-            for lower, upper, damage in ranges:
+            for lower, upper, damage, breakdown in ranges:
+                def bd_text():
+                    if not breakdown:
+                        return ""
+                    parts = [f"{k} {v}" for k, v in sorted(breakdown.items())]
+                    return " (" + ", ".join(parts) + ")"
+
                 if upper is None and lower is not None:
-                    append_log(window, f"AC > {lower}: {damage} dmg")
+                    append_log(window, f"AC > {lower}: {damage} dmg{bd_text()}")
                 elif lower is None:
-                    append_log(window, f"AC ≤ {upper}: {damage} dmg")
+                    append_log(window, f"AC ≤ {upper}: {damage} dmg{bd_text()}")
                 else:
-                    append_log(window, f"{lower} < AC ≤ {upper}: {damage} dmg")
+                    append_log(window, f"{lower} < AC ≤ {upper}: {damage} dmg{bd_text()}")
         if results:
             append_log(window, "--- Per attack ---")
             for r in results:
                 if r["threat"] and r["confirm_total"] is not None:
+                    normal_bd = ", ".join(
+                        f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())
+                    ) or "none"
+                    crit_bd = ", ".join(
+                        f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())
+                    ) or "none"
                     append_log(
                         window,
-                        f"{r['label']}: attack {r['attack_total']} | threat (crit confirms on AC ≤ {r['confirm_total']}) "
-                        f"normal {r['damage_normal']} dmg / crit {r['damage_critical']} dmg",
+                        f"{r['label']}: hits AC {r['attack_total']} | threat (crit confirms on AC ≤ {r['confirm_total']}) "
+                        f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]",
                     )
                 else:
                     append_log(
                         window,
-                        f"{r['label']}: attack {r['attack_total']} | damage {r['damage_normal']} dmg",
+                        f"{r['label']}: hits AC {r['attack_total']} | damage {r['damage_normal']} dmg "
+                        f"[{', '.join(f'{k} {v}' for k, v in sorted(r['breakdown_normal'].items())) or 'none'}]",
                     )
         append_log(window, "")
 
