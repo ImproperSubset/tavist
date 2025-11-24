@@ -32,7 +32,11 @@ from tavist.model import (
     recommend_setup,
 )
 from tavist.tracking import ACTargetTracker, format_bound, accumulate_known_hits, damage_for_hit
-from tavist.controller import format_attack_line, summarize_damage_ranges
+from tavist.controller import (
+    apply_tracking_selection,
+    format_attack_line,
+    summarize_damage_ranges,
+)
 
 
 class MainWindow(QMainWindow):
@@ -461,20 +465,7 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
     layout.addWidget(cancel_btn)
 
     if dialog.exec() == QDialog.Accepted:
-        if selection["all_miss"]:
-            for r in candidates:
-                tracker.record_miss(r["attack_total"])
-        elif selection["total"] is not None:
-            chosen = selection["total"]
-            for r in candidates:
-                if r["attack_total"] >= chosen:
-                    if r.get("confirm_total"):
-                        tracker.record_hit(r["confirm_total"])
-                    else:
-                        tracker.record_hit(r["attack_total"])
-                    tracker.damage_done += damage_for_hit(r, tracker.upper)
-                else:
-                    tracker.record_miss(r["attack_total"])
+        apply_tracking_selection(tracker, selection, candidates)
         est = tracker.estimate()
         window.target_ac.blockSignals(True)
         window.target_ac.setText(str(est))

@@ -8,7 +8,7 @@ authors = ["Rhett D. Hudson, Ph.D. <rhett.hudson@gmail.com>"]
 python = ">=3.10,<3.12"
 PySide6 = "^6.3.1"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "^5.2"
 autopep8 = "^1.7.0"
 

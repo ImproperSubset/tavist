@@ -492,7 +492,7 @@ def test_format_attack_line_confirm_failure(monkeypatch):
         "natural_twenty": False,
     }
     line = app_main.format_attack_line(r, tracker)
-    assert "failed" in line
+    assert "did not confirm" in line
     assert "crit confirmed" not in line
     assert line.startswith("* **")
 
