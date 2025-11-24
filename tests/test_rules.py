@@ -400,6 +400,40 @@ def test_tracking_dialog_adds_damage(monkeypatch):
     qapp.quit()
 
 
+def test_tracking_dialog_crit_confirm_logic(monkeypatch):
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+    import main as app_main
+
+    qapp = QApplication.instance() or QApplication([])
+
+    def fake_exec(self):
+        # click the crit threat
+        for btn in self.findChildren(QPushButton):
+            if "(AC 18)" in btn.text():
+                btn.click()
+                break
+        return QDialog.Accepted
+
+    monkeypatch.setattr(QDialog, "exec", fake_exec)
+
+    window = app_main.MainWindow()
+    tavist = app_main.Tavist()
+    tracker = app_main.ACTargetTracker()
+    tracker.lower = 0
+    tracker.upper = 20
+    results = [
+        {"label": "crit", "attack_total": 18, "damage_normal": 5, "damage_critical": 9, "threat": True, "confirm_total": 19},
+    ]
+
+    app_main.tracking_dialog(window, tavist, tracker, results, [12, 12, 7, 2], ["first", "speed", "second", "third"])
+
+    # confirm >= bound, so crit damage should be counted
+    assert tracker.damage_done == 9
+    qapp.quit()
+
+
 def test_new_opponent_resets_damage(monkeypatch):
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"

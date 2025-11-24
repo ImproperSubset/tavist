@@ -409,7 +409,7 @@ def wrap_full_attack(
                         f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())
                     ) or "none"
                     line = (
-                        f"{r['label']}: hits AC {r['attack_total']} | threat (crit confirms on AC ≤ {r['confirm_total']}) "
+                        f"{r['label']}: hits AC {r['attack_total']} | threat (crit confirms on AC {r['confirm_total']}) "
                         f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]"
                     )
                 else:
@@ -581,7 +581,12 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
     selection = {"total": None, "all_miss": False}
 
     for r in sorted(candidates, key=lambda x: x["attack_total"]):
-        btn = QPushButton(f"{r['label']} (AC {r['attack_total']})")
+        label = f"{r['label']} (AC {r['attack_total']})"
+        if r.get("threat"):
+            confirm = r.get("confirm_total")
+            if confirm:
+                label += f" / confirm {confirm}"
+        btn = QPushButton(label)
         btn.setEnabled(True)
 
         def make_handler(total):
@@ -611,7 +616,9 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
             for r in candidates:
                 if r["attack_total"] >= chosen:
                     tracker.record_hit(r["attack_total"])
-                    tracker.damage_done += r.get("damage_normal", 0)
+                    # If crit confirm meets bound, count crit damage; otherwise normal
+                    use_crit = r.get("threat") and r.get("confirm_total") and r["confirm_total"] >= tracker.upper
+                    tracker.damage_done += r.get("damage_critical" if use_crit else "damage_normal", 0)
                 else:
                     tracker.record_miss(r["attack_total"])
         est = tracker.estimate()
