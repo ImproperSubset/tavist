@@ -1,8 +1,7 @@
 from contextlib import redirect_stdout
 import sys
-from dataclasses import dataclass, field
-from enum import Enum
-from random import randint
+import html
+import re
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
@@ -11,10 +10,26 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLineEdit,
     QMainWindow,
-    QPlainTextEdit,
+    QTextEdit,
     QPushButton,
+    QRadioButton,
     QVBoxLayout,
     QWidget,
+    QDialog,
+    QCheckBox,
+)
+from tavist.model import (
+    AttackAction,
+    AttackRoll,
+    Bonus,
+    BonusType,
+    DamageDice,
+    DamageRoll,
+    DamageType,
+    Tavist,
+    WeaponDamageDice,
+    expected_full_attack,
+    recommend_setup,
 )
 
 
@@ -22,6 +37,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Tavist")
+        font = self.font()
+        font.setPointSize(font.pointSize() + 2)
+        self.setFont(font)
 
         self.target_ac = QLineEdit()
         self.target_ac.setText("")
@@ -29,7 +47,7 @@ class MainWindow(QMainWindow):
         self.expertise = QLineEdit()
         self.expertise.setText("")
 
-        self.auto_button = QPushButton("Auto (use AC)")
+        self.auto_button = QPushButton("New Opponent")
 
         self.two_handed = QPushButton()
         self.two_handed.setCheckable(True)
@@ -45,13 +63,29 @@ class MainWindow(QMainWindow):
         targeting_group = QGroupBox("Targeting")
         targeting_group.setLayout(targeting_layout)
 
+        extra_layout = QHBoxLayout()
+        self.ext_hit = QLineEdit("0")
+        self.ext_str = QLineEdit("0")
+        self.fatigued = QPushButton("Fatigued")
+        self.fatigued.setCheckable(True)
+        self.fatigued.setChecked(False)
+        extra_layout.addWidget(QLabel("Ext Hit:"))
+        extra_layout.addWidget(self.ext_hit)
+        extra_layout.addWidget(QLabel("Ext Str:"))
+        extra_layout.addWidget(self.ext_str)
+        extra_layout.addWidget(self.fatigued)
+        extra_group = QGroupBox("External Effects")
+        extra_group.setLayout(extra_layout)
+
         poweratt_layout = QHBoxLayout()
         self.reccommended_poweratt = QLabel()
         self.poweratt = QLineEdit("0")
+        self.poweratt_lock = QCheckBox("Lock")
         poweratt_layout.addWidget(QLabel("Pwr Att:"))
         poweratt_layout.addWidget(self.poweratt)
         poweratt_layout.addWidget(QLabel("Suggested:"))
         poweratt_layout.addWidget(self.reccommended_poweratt)
+        poweratt_layout.addWidget(self.poweratt_lock)
         poweratt_layout.addWidget(self.two_handed)
 
         poweratt_group = QGroupBox("Attack Mode")
@@ -69,41 +103,49 @@ class MainWindow(QMainWindow):
         self.surge.setChecked(False)
         self.surge.setText("Power Surge")
 
+        self.tracking = QPushButton("Tracking")
+        self.tracking.setCheckable(True)
+        self.tracking.setChecked(True)
+
         status_layout.addWidget(self.evil)
         status_layout.addWidget(self.surge)
+        status_layout.addWidget(self.tracking)
 
         status_group = QGroupBox("Status")
         status_group.setLayout(status_layout)
 
         katana_layout = QHBoxLayout()
-        self.katana_attacks = [QPushButton() for i in range(4)]
-        for button in self.katana_attacks:
-            katana_layout.addWidget(button)
-        katana_group = QGroupBox("Katana")
+        self.attack_button = QPushButton("Attack")
+        katana_layout.addWidget(self.attack_button)
+        katana_group = QGroupBox("Single Attack")
         katana_group.setLayout(katana_layout)
-
-        wakasashi_layout = QHBoxLayout()
-        self.wakasashi_attack = QPushButton()
-        wakasashi_layout.addWidget(self.wakasashi_attack)
-        wakasashi_group = QGroupBox("Wakasashi")
-        wakasashi_group.setLayout(wakasashi_layout)
 
         main_layout = QVBoxLayout()
         main_layout.addWidget(targeting_group)
+        main_layout.addWidget(extra_group)
         main_layout.addWidget(poweratt_group)
         main_layout.addWidget(status_group)
         main_layout.addWidget(katana_group)
-        main_layout.addWidget(wakasashi_group)
 
         self.full_attack = QPushButton("Full Attack")
         main_layout.addWidget(self.full_attack)
 
+        dpr_row = QHBoxLayout()
         self.dpr_label = QLabel("Expected DPR: —")
-        main_layout.addWidget(self.dpr_label)
+        self.ac_bound = QLabel("AC bound: ?>")
+        dpr_row.addWidget(self.dpr_label)
+        dpr_row.addWidget(self.ac_bound)
+        dpr_row.addStretch()
+        main_layout.addLayout(dpr_row)
 
-        self.log_output = QPlainTextEdit()
+        self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMinimumHeight(160)
+        log_font = self.log_output.font()
+        log_font.setPointSize(log_font.pointSize() + 2)
+        self.log_output.setFont(log_font)
+        self.log_output.setLineWrapMode(QTextEdit.NoWrap)
+        self.log_output.setMinimumWidth(800)
         main_layout.addWidget(self.log_output)
 
         main_widget = QWidget()
@@ -111,325 +153,6 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         self.resize(900, 700)
 
-
-class BonusType(Enum):
-    UNNAMED = "unnamed"
-    BAB = "base-attack-bonus"
-    ABILITY = "ability"
-    ENHANCEMENT = "enhancement"
-    TWO_WEAPONS = "two-weapons"
-    WEAPON_FOCUS = "weapon-focus"
-    POWER_ATTACK = "power-attack"
-
-
-class DamageType(Enum):
-    SLASHING = "slashing"
-    PIERCING = "piercing"
-
-
-@dataclass()
-class Bonus:
-    bonus: int = 0
-    type: BonusType = BonusType.UNNAMED
-    label: str | None = None
-
-
-@dataclass(kw_only=True)
-class Dice:
-    d: int = 20
-    n: int = 1
-    label: str | None = None
-
-
-@dataclass(kw_only=True)
-class DamageDice(Dice):
-    pass
-
-
-@dataclass(kw_only=True)
-class WeaponDamageDice(Dice):
-    pass
-
-
-@dataclass
-class RolledDice:
-    label: str | None
-    rolls: list[list[int]] = field(default_factory=list)
-    bonuses: list[Bonus] = field(default_factory=list)
-    total: int = 0
-    dice: list[Dice] = field(default_factory=list)
-
-
-@dataclass(kw_only=True)
-class Roll:
-    label: str | None = None
-    dice: list[Dice] = field(default_factory=list)
-    bonuses: list[Bonus] = field(default_factory=list)
-
-    def roll(self) -> RolledDice:
-        rolled_dice = RolledDice(self.label)
-        rolled_dice.dice = self.dice
-        rolled_dice.rolls = []
-        for roll in self.dice:
-            rolls = []
-            for n in range(roll.n):
-                rolled_die = randint(1, roll.d)
-                rolls.append(rolled_die)
-                rolled_dice.total += rolled_die
-            rolled_dice.rolls.append(rolls)
-
-        rolled_dice.bonuses = self.bonuses
-        for bonus in self.bonuses:
-            rolled_dice.total += bonus.bonus
-
-        return rolled_dice
-
-
-@dataclass(kw_only=True)
-class AttackRoll(Roll):
-    critical_threshold: int = 20
-
-    def __post_init__(self):
-        self.dice.append(Dice(d=20, label="attack"))
-
-
-@dataclass(kw_only=True)
-class DamageRoll(Roll):
-    type: DamageType
-
-    def roll(self, critical: bool = False) -> RolledDice:
-        rolled_dice = RolledDice(self.label)
-        rolled_dice.dice = self.dice
-        rolled_dice.rolls = []
-        for roll in self.dice:
-            rolls = []
-            for n in range(roll.n):
-                rolled_die = randint(1, roll.d)
-                rolls.append(rolled_die)
-                rolled_dice.total += (
-                    rolled_die * 2
-                    if isinstance(roll, WeaponDamageDice) and critical
-                    else rolled_die
-                )
-            rolled_dice.rolls.append(rolls)
-
-        rolled_dice.bonuses = self.bonuses
-        for bonus in self.bonuses:
-            rolled_dice.total += bonus.bonus * 2 if critical else bonus.bonus
-
-        return rolled_dice
-
-
-@dataclass(kw_only=True)
-class AttackAction:
-    label: str
-    attack: AttackRoll
-    damage: DamageRoll
-
-    def do_attack(self):
-        attack_roll = self.attack.roll()
-        attack_die = attack_roll.rolls[0][0]
-        threat = attack_die >= self.attack.critical_threshold
-        confirm_roll = self.attack.roll() if threat else None
-
-        damage_roll = self.damage.roll(critical=False)
-        damage_breakdown: dict[str, dict[str, int]] = {}
-        weapon_label = self.damage.type.value
-        attack_mods = []
-        for bonus in attack_roll.bonuses:
-            name = bonus.type.value if bonus.type != BonusType.UNNAMED else bonus.label or "unnamed"
-            attack_mods.append(f"{name}[{bonus.bonus:+}]")
-        attack_mods_text = " + ".join(attack_mods) if attack_mods else "no modifiers"
-
-        damage_dice_parts = []
-        for idx, die in enumerate(damage_roll.dice):
-            rolls = ",".join(str(r) for r in damage_roll.rolls[idx])
-            crit_tag = " *2 on crit" if isinstance(die, WeaponDamageDice) else ""
-            damage_dice_parts.append(f"{die.label}: d{die.d}({rolls}){crit_tag}")
-            normal = sum(damage_roll.rolls[idx])
-            crit_val = normal * (2 if isinstance(die, WeaponDamageDice) else 1)
-            label = weapon_label if isinstance(die, WeaponDamageDice) else die.label or "damage"
-            bucket = damage_breakdown.setdefault(label, {"normal": 0, "critical": 0})
-            bucket["normal"] += normal
-            bucket["critical"] += crit_val
-        damage_dice_text = " | ".join(damage_dice_parts) if damage_dice_parts else "none"
-
-        damage_bonus_parts = []
-        for bonus in damage_roll.bonuses:
-            name = (
-                weapon_label
-                if bonus.type
-                in (
-                    BonusType.ABILITY,
-                    BonusType.ENHANCEMENT,
-                    BonusType.POWER_ATTACK,
-                )
-                else bonus.type.value
-                if bonus.type != BonusType.UNNAMED
-                else bonus.label
-                or "unnamed"
-            )
-            damage_bonus_parts.append(f"{name}[{bonus.bonus:+}] *2 on crit")
-            bucket = damage_breakdown.setdefault(name, {"normal": 0, "critical": 0})
-            bucket["normal"] += bonus.bonus
-            bucket["critical"] += bonus.bonus * 2
-        damage_bonus_text = " + ".join(damage_bonus_parts) if damage_bonus_parts else "none"
-
-        damage_base = 0
-        damage_crit = 0
-        for values in damage_breakdown.values():
-            damage_base += values["normal"]
-            damage_crit += values["critical"]
-
-        breakdown_normal = {label: vals["normal"] for label, vals in damage_breakdown.items() if vals["normal"] != 0}
-        breakdown_critical = {label: vals["critical"] for label, vals in damage_breakdown.items() if vals["critical"] != 0}
-
-        def format_breakdown_map(mapping: dict[str, int]) -> str:
-            if not mapping:
-                return "none"
-            parts = [f"{k} {v}" for k, v in sorted(mapping.items())]
-            return ", ".join(parts)
-
-        lines = [
-            f"=== Attack: {self.label} ===",
-            f"Attack total: {attack_roll.total} (d20={attack_die}{' CRIT THREAT' if threat else ''})",
-            f"Attack mods: {attack_mods_text}",
-        ]
-        if threat and confirm_roll is not None:
-            lines.append(
-                f"Confirm roll: {confirm_roll.total} (crit confirms on AC ≤ {confirm_roll.total})"
-            )
-        else:
-            lines.append("No critical threat")
-
-        lines += [
-            f"Damage (normal): {damage_base}",
-            f"Damage (critical): {damage_crit} (if confirmed)",
-            f"Breakdown normal: {format_breakdown_map(breakdown_normal)}",
-            f"Breakdown critical: {format_breakdown_map(breakdown_critical)}",
-            f"Damage dice: {damage_dice_text}",
-            f"Damage mods: {damage_bonus_text}",
-        ]
-        print("\n".join(lines))
-        print()
-        return {
-            "label": self.label,
-            "attack_total": attack_roll.total,
-            "attack_die": attack_die,
-            "threat": threat,
-            "confirm_total": confirm_roll.total if confirm_roll else None,
-            "damage_normal": damage_base,
-            "damage_critical": damage_crit,
-            "breakdown_normal": breakdown_normal,
-            "breakdown_critical": breakdown_critical,
-        }
-
-
-class Tavist:
-    def __init__(self):
-        self.poweratt_damage_bonus: Bonus = Bonus(
-            type=BonusType.POWER_ATTACK, label="power attack"
-        )
-        self.poweratt_attack_penalty: Bonus = Bonus(
-            type=BonusType.POWER_ATTACK, label="power attack"
-        )
-        self.bab = Bonus(12, BonusType.BAB)
-        self.combat_expertise = Bonus(0, label="expertise")
-
-        self.holy_dice: DamageDice = DamageDice(n=2, d=6, label="holy")
-        self.surge_bonus: Bonus = Bonus(bonus=4, label="power-surge")
-
-        self.two_weapon_penalty = Bonus(-2, BonusType.TWO_WEAPONS)
-
-        tavist_melee_attack_bonus = [
-            Bonus(4, BonusType.ABILITY),
-            self.bab,
-            self.combat_expertise,
-            self.two_weapon_penalty,
-            self.poweratt_attack_penalty,
-        ]
-
-        self.ability_main = Bonus(4, BonusType.ABILITY)
-        self.ability_off = Bonus(2, BonusType.ABILITY)
-        self.poweratt_damage_bonus_main = Bonus(
-            type=BonusType.POWER_ATTACK, label="power attack"
-        )
-        self.poweratt_damage_bonus_off = Bonus(
-            type=BonusType.POWER_ATTACK, label="power attack"
-        )
-
-        self.katana_attack = AttackRoll(
-            critical_threshold=17,  # bastard sword 19-20, keen doubles to 17-20
-            bonuses=[
-                Bonus(2, BonusType.ENHANCEMENT),
-                Bonus(1, BonusType.WEAPON_FOCUS),
-                *tavist_melee_attack_bonus,
-            ],
-        )
-
-        self.wakasashi_attack = AttackRoll(
-            critical_threshold=19,  # short sword 19-20
-            bonuses=[Bonus(2, BonusType.ENHANCEMENT), *tavist_melee_attack_bonus],
-        )
-
-        self.katana_damage = DamageRoll(
-            type=DamageType.SLASHING,
-            dice=[
-                WeaponDamageDice(d=10, label="weapon"),
-                DamageDice(d=6, label="merciful"),
-            ],
-            bonuses=[
-                Bonus(2, BonusType.ENHANCEMENT),
-                self.ability_main,
-                self.poweratt_damage_bonus_main,
-            ],
-        )
-
-        self.wakasashi_damage = DamageRoll(
-            type=DamageType.PIERCING,
-            dice=[WeaponDamageDice(d=6, label="weapon"), Dice(d=6, label="merciful")],
-            bonuses=[
-                Bonus(1, BonusType.ENHANCEMENT),
-                self.ability_off,
-                self.poweratt_damage_bonus_off,
-            ],
-        )
-
-        self.katana_attack_action = AttackAction(
-            label="first", attack=self.katana_attack, damage=self.katana_damage
-        )
-
-        self.wakasashi_attack_action = AttackAction(
-            label="off-hand", attack=self.wakasashi_attack, damage=self.wakasashi_damage
-        )
-
-        self.power_attack_value = 0
-        self.two_handed_mode = False
-        self.poweratt_scale_main = 1.0
-        self.poweratt_scale_off = 0.5
-        self.set_power_attack(0)
-
-    def set_power_attack(self, value: int):
-        self.power_attack_value = max(0, value)
-        self.poweratt_attack_penalty.bonus = -self.power_attack_value
-        self.poweratt_damage_bonus_main.bonus = int(self.power_attack_value * self.poweratt_scale_main)
-        self.poweratt_damage_bonus_off.bonus = int(self.power_attack_value * self.poweratt_scale_off)
-
-    def set_two_handed(self, two_handed: bool):
-        self.two_handed_mode = two_handed
-        if two_handed:
-            self.two_weapon_penalty.bonus = 0
-            self.ability_main.bonus = 6  # 1.5x Str
-            self.ability_off.bonus = 0
-            self.poweratt_scale_main = 2.0
-            self.poweratt_scale_off = 0.0
-        else:
-            self.two_weapon_penalty.bonus = -2
-            self.ability_main.bonus = 4
-            self.ability_off.bonus = 2
-            self.poweratt_scale_main = 1.0
-            self.poweratt_scale_off = 0.5
-        self.set_power_attack(self.power_attack_value)
 
 
 def make_dice_toggle(roll: DamageRoll, cond: DamageDice):
@@ -508,91 +231,6 @@ def wrap_bonus_adjustment(attack: AttackAction, name: str, bonus: Bonus, value: 
     return bonus_adjustment
 
 
-def expected_attack_damage(action: AttackAction, ac: int) -> float:
-    atk_bonus = sum(b.bonus for b in action.attack.bonuses)
-    threshold = action.attack.critical_threshold
-
-    mean_normal = sum(d.n * (d.d + 1) / 2 for d in action.damage.dice) + sum(
-        b.bonus for b in action.damage.bonuses
-    )
-    mean_crit = sum(
-        d.n * (d.d + 1) / 2 * (2 if isinstance(d, WeaponDamageDice) else 1)
-        for d in action.damage.dice
-    ) + sum(b.bonus * 2 for b in action.damage.bonuses)
-
-    def hit_for_roll(r: int) -> bool:
-        if r == 1:
-            return False
-        if r == 20:
-            return True
-        return r + atk_bonus >= ac
-
-    hit_count = 0
-    threat_count = 0
-    for r in range(1, 21):
-        if hit_for_roll(r):
-            hit_count += 1
-            if r >= threshold:
-                threat_count += 1
-    hit_prob = hit_count / 20
-    threat_prob = threat_count / 20
-
-    # confirm uses same attack bonus
-    confirm_count = 0
-    for r in range(1, 21):
-        if hit_for_roll(r):
-            confirm_count += 1
-    confirm_prob = confirm_count / 20
-
-    extra_on_crit = mean_crit - mean_normal
-    expected = hit_prob * mean_normal + threat_prob * confirm_prob * extra_on_crit
-    return expected
-
-
-def expected_full_attack(
-    tavist: "Tavist", ac: int, two_handed: bool, attacks: list[int], attack_names: list[str]
-) -> float:
-    # Save state
-    prev_two = tavist.two_handed_mode
-    prev_pa = tavist.power_attack_value
-    prev_bab = tavist.bab.bonus
-
-    tavist.set_two_handed(two_handed)
-    total = 0.0
-
-    for idx, bonus in enumerate(attacks):
-        tavist.bab.bonus = bonus
-        total += expected_attack_damage(tavist.katana_attack_action, ac)
-
-    if not two_handed:
-        tavist.bab.bonus = 12
-        total += expected_attack_damage(tavist.wakasashi_attack_action, ac)
-
-    # Restore
-    tavist.set_two_handed(prev_two)
-    tavist.set_power_attack(prev_pa)
-    tavist.bab.bonus = prev_bab
-    return total
-
-
-def recommend_setup(
-    tavist: "Tavist", ac: int, attacks: list[int], attack_names: list[str]
-) -> tuple[int, bool]:
-    orig_pa = tavist.power_attack_value
-    orig_two = tavist.two_handed_mode
-    best = (0.0, 0, False)
-    for two_handed in (False, True):
-        pa_max = 12 if not two_handed else 12
-        for pa in range(0, pa_max + 1):
-            tavist.set_power_attack(pa)
-            dpr = expected_full_attack(tavist, ac, two_handed, attacks, attack_names)
-            if dpr > best[0]:
-                best = (dpr, pa, two_handed)
-    tavist.set_two_handed(orig_two)
-    tavist.set_power_attack(orig_pa)
-    return best[1], best[2]
-
-
 class DualWriter:
     def __init__(self):
         self.parts: list[str] = []
@@ -609,11 +247,44 @@ class DualWriter:
 
 
 def append_log(window: MainWindow, text: str):
-    window.log_output.appendPlainText(text)
+    def _escape(s: str) -> str:
+        # Minimal escaping: leave ">" intact for readability.
+        return s.replace("&", "&amp;").replace("<", "&lt;")
+
+    for raw_line in text.split("\n"):
+        escaped = _escape(raw_line)
+        bold_match = re.search(r"\*\*(.+?)\*\*", escaped)
+        if bold_match:
+            content = re.sub(r"\*\*(.+?)\*\*", r"\1", escaped)
+            window.log_output.append(f'<span style="font-weight:bold">{content}</span>')
+        else:
+            window.log_output.append(f'<span style="font-weight:normal">{escaped}</span>')
     cursor = window.log_output.textCursor()
     cursor.movePosition(QTextCursor.End)
     window.log_output.setTextCursor(cursor)
     window.log_output.ensureCursorVisible()
+
+
+class ACTargetTracker:
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.lower = 0  # AC is > lower
+        self.upper = 99  # AC is <= upper
+
+    def record_hit(self, attack_total: int):
+        self.upper = min(self.upper, attack_total)
+
+    def record_miss(self, attack_total: int):
+        self.lower = max(self.lower, attack_total)
+
+    def estimate(self) -> int:
+        if self.upper == 99:
+            return self.lower
+        if (self.upper - self.lower) <= 1:
+            return self.upper
+        return (self.lower + self.upper + 1) // 2
 
 
 def perform_attack_with_log(attack: AttackAction, window: MainWindow):
@@ -722,6 +393,11 @@ def wrap_full_attack(
         if results:
             append_log(window, "--- Per attack ---")
             for r in results:
+                tracker = getattr(window, "_ac_tracker", None)
+                certainly_hits = (
+                    tracker is not None and tracker.upper != 99 and r["attack_total"] >= tracker.upper
+                )
+                line = ""
                 if r["threat"] and r["confirm_total"] is not None:
                     normal_bd = ", ".join(
                         f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())
@@ -729,20 +405,77 @@ def wrap_full_attack(
                     crit_bd = ", ".join(
                         f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())
                     ) or "none"
-                    append_log(
-                        window,
+                    line = (
                         f"{r['label']}: hits AC {r['attack_total']} | threat (crit confirms on AC ≤ {r['confirm_total']}) "
-                        f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]",
+                        f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]"
                     )
                 else:
-                    append_log(
-                        window,
+                    line = (
                         f"{r['label']}: hits AC {r['attack_total']} | damage {r['damage_normal']} dmg "
-                        f"[{', '.join(f'{k} {v}' for k, v in sorted(r['breakdown_normal'].items())) or 'none'}]",
+                        f"[{', '.join(f'{k} {v}' for k, v in sorted(r['breakdown_normal'].items())) or 'none'}]"
                     )
+                if certainly_hits:
+                    line = f"* **{line}**"
+                append_log(window, line)
         append_log(window, "")
 
+        return results
+
     return do_full_attack
+
+
+def wrap_single_attack(window: MainWindow, tavist: "Tavist", attacks: list[int], attack_names: list[str]):
+    def do_attack():
+        results: list[dict] = []
+        wrap_bonus_adjustment(
+            tavist.katana_attack_action, attack_names[0], tavist.bab, attacks[0]
+        )()
+        results.append(perform_attack_with_log(tavist.katana_attack_action, window)())
+
+        if results:
+            r = results[0]
+            normal_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())) or "none"
+            crit_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())) or "none"
+            tracker = getattr(window, "_ac_tracker", None)
+            certainly_hits = (
+                tracker is not None and tracker.upper != 99 and r["attack_total"] >= tracker.upper
+            )
+            line = (
+                f"{r['label']}: hits AC {r['attack_total']} | "
+                f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]"
+            )
+            if certainly_hits:
+                line = f"* **{line}**"
+            append_log(window, line)
+            append_log(window, "")
+        return results
+
+    return do_attack
+
+
+def wrap_single_attack(window: MainWindow, tavist: "Tavist", attacks: list[int], attack_names: list[str]):
+    def do_attack():
+        results: list[dict] = []
+        for idx, bonus in enumerate(attacks):
+            wrap_bonus_adjustment(
+                tavist.katana_attack_action, attack_names[idx], tavist.bab, bonus
+            )()
+            res = perform_attack_with_log(tavist.katana_attack_action, window)()
+            results.append(res)
+            break  # only the first available attack bonus (primary attack)
+
+        if results:
+            r = results[0]
+            normal_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())) or "none"
+            crit_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())) or "none"
+            append_log(
+                window,
+                f"{r['label']}: hits AC {r['attack_total']} | "
+                f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]",
+            )
+            append_log(window, "")
+
+    return do_attack
 
 
 def wrap_auto_recommend(
@@ -753,6 +486,9 @@ def wrap_auto_recommend(
             ac = int(window.target_ac.text() or "0")
         except ValueError:
             ac = 99
+        tracker = getattr(window, "_ac_tracker", None)
+        if tracker:
+            tracker.reset()
         pa, two = recommend_setup(tavist, ac, attacks, attack_names)
         tavist.set_two_handed(two)
         window.two_handed.setChecked(two)
@@ -784,9 +520,96 @@ def update_dpr_label(
     best_pa, best_two = recommend_setup(tavist, ac, attacks, attack_names)
     mode = "2H" if best_two else "TWF"
     window.reccommended_poweratt.setText(str(best_pa))
+    if not window.poweratt_lock.isChecked():
+        window.poweratt.blockSignals(True)
+        window.poweratt.setText(str(best_pa))
+        window.poweratt.blockSignals(False)
+        tavist.set_power_attack(best_pa)
     window.dpr_label.setText(
         f"Expected DPR (AC {ac}): {dpr:.1f} | Best: PA {best_pa} {mode}"
     )
+    tracker = getattr(window, "_ac_tracker", None)
+    if tracker:
+        window.ac_bound.setText(f"AC bound: {format_bound(tracker)}")
+
+
+def apply_external(window: MainWindow, tavist: Tavist, attacks: list[int], attack_names: list[str]):
+    try:
+        hit = int(window.ext_hit.text() or "0")
+    except ValueError:
+        hit = 0
+    try:
+        strength = int(window.ext_str.text() or "0")
+    except ValueError:
+        strength = 0
+    tavist.set_external_hit(hit)
+    tavist.set_external_str(strength)
+    update_dpr_label(window, tavist, attacks, attack_names)
+
+
+def format_bound(tracker: ACTargetTracker) -> str:
+    if tracker.upper != 99 and (tracker.upper - tracker.lower) <= 1:
+        return f"== {tracker.upper}"
+    return f">{tracker.lower}, ≤{tracker.upper if tracker.upper != 99 else '?'}"
+
+
+def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker, results: list[dict], attacks: list[int], attack_names: list[str]):
+    if tracker.upper != 99 and (tracker.upper - tracker.lower) <= 1:
+        return
+    candidates = [r for r in results if tracker.lower < r["attack_total"] <= tracker.upper]
+    if not candidates:
+        return
+
+    dialog = QDialog(window)
+    dialog.setWindowTitle("Attack Results")
+    layout = QVBoxLayout(dialog)
+    layout.addWidget(QLabel(f"Current AC range: {format_bound(tracker)}"))
+    layout.addWidget(QLabel("Select the lowest-AC attack that HIT, or All Misses."))
+
+    selection = {"total": None, "all_miss": False}
+
+    for r in sorted(candidates, key=lambda x: x["attack_total"]):
+        btn = QPushButton(f"{r['label']} (AC {r['attack_total']})")
+        btn.setEnabled(True)
+
+        def make_handler(total):
+            def handler():
+                selection["total"] = total
+                dialog.accept()
+
+            return handler
+
+        btn.clicked.connect(make_handler(r["attack_total"]))
+        layout.addWidget(btn)
+
+    miss_btn = QPushButton("All Misses")
+    miss_btn.clicked.connect(lambda: (selection.update({"all_miss": True}), dialog.accept()))
+    layout.addWidget(miss_btn)
+
+    cancel_btn = QPushButton("Cancel")
+    cancel_btn.clicked.connect(dialog.reject)
+    layout.addWidget(cancel_btn)
+
+    if dialog.exec() == QDialog.Accepted:
+        if selection["all_miss"]:
+            for r in candidates:
+                tracker.record_miss(r["attack_total"])
+        elif selection["total"] is not None:
+            chosen = selection["total"]
+            for r in candidates:
+                if r["attack_total"] >= chosen:
+                    tracker.record_hit(r["attack_total"])
+                else:
+                    tracker.record_miss(r["attack_total"])
+        est = tracker.estimate()
+        window.target_ac.blockSignals(True)
+        window.target_ac.setText(str(est))
+        window.target_ac.blockSignals(False)
+        update_dpr_label(window, tavist, attacks, attack_names)
+        append_log(
+            window,
+            f"Updated AC bound: {format_bound(tracker)} (est {est})",
+        )
 
 
 def main() -> None:
@@ -794,35 +617,26 @@ def main() -> None:
     window = MainWindow()
 
     tavist = Tavist()
+    tracker = ACTargetTracker()
+    window._ac_tracker = tracker
 
     attacks = [12, 12, 7, 2]
-    attack_names = ["first", "speed", "second", "third"]
-    for idx, attack in enumerate(window.katana_attacks):
-        attack.clicked.connect(
-            wrap_bonus_adjustment(
-                tavist.katana_attack_action, attack_names[idx], tavist.bab, attacks[idx]
-            )
-        )
-        attack.clicked.connect(perform_attack_with_log(tavist.katana_attack_action, window))
-        attack.setText(attack_names[idx])
+    attack_names = [f"{name} (+{atk})" for name, atk in zip(["first", "speed", "second", "third"], attacks)]
 
-    window.wakasashi_attack.clicked.connect(
-        wrap_bonus_adjustment(
-            tavist.wakasashi_attack_action, "off-hand", tavist.bab, 12
-        )
-    )
-    window.wakasashi_attack.clicked.connect(
-        perform_attack_with_log(tavist.wakasashi_attack_action, window)
-    )
-    window.wakasashi_attack.setText(tavist.wakasashi_attack_action.label)
+    def do_single():
+        results = wrap_single_attack(window, tavist, attacks, attack_names)()
+        if window.tracking.isChecked():
+            tracking_dialog(window, tavist, tracker, results, attacks, attack_names)
+    window.attack_button.clicked.connect(do_single)
 
-    window.full_attack.clicked.connect(
-        wrap_full_attack(window, tavist, attack_names, attacks)
-    )
+    def do_full():
+        results = wrap_full_attack(window, tavist, attack_names, attacks)()
+        if window.tracking.isChecked():
+            tracking_dialog(window, tavist, tracker, results, attacks, attack_names)
+    window.full_attack.clicked.connect(do_full)
 
     def apply_two_handed(checked: bool):
         tavist.set_two_handed(checked)
-        window.wakasashi_attack.setEnabled(not checked)
         tavist.bab.bonus = attacks[0]
         update_dpr_label(window, tavist, attacks, attack_names)
 
@@ -836,11 +650,15 @@ def main() -> None:
         make_dice_toggle(tavist.katana_damage, tavist.holy_dice)
     )
     window.surge.clicked.connect(
-        make_bonus_toggle(tavist.katana_damage, tavist.surge_bonus)
+        make_bonus_toggle(tavist.katana_damage, tavist.surge_bonus_main)
     )
     window.surge.clicked.connect(
-        make_bonus_toggle(tavist.wakasashi_damage, tavist.surge_bonus)
+        make_bonus_toggle(tavist.wakasashi_damage, tavist.surge_bonus_off)
     )
+    window.surge.clicked.connect(
+        make_bonus_toggle(tavist.katana_attack, tavist.surge_bonus_attack_main)
+    )
+    # off-hand surge attack bonus applies only in dual-wield mode; handled in attack setup
 
     window.poweratt.textChanged.connect(make_power_attack_update(tavist))
     window.poweratt.textChanged.connect(
@@ -854,6 +672,16 @@ def main() -> None:
     window.target_ac.textChanged.connect(
         lambda _: update_dpr_label(window, tavist, attacks, attack_names)
     )
+    window.ext_hit.textChanged.connect(lambda _: apply_external(window, tavist, attacks, attack_names))
+    window.ext_str.textChanged.connect(lambda _: apply_external(window, tavist, attacks, attack_names))
+    def apply_fatigue(checked: bool):
+        tavist.set_fatigued(checked)
+        update_dpr_label(window, tavist, attacks, attack_names)
+    window.fatigued.toggled.connect(apply_fatigue)
+    def on_tracking_toggled(checked: bool):
+        if checked:
+            tracker.reset()
+    window.tracking.toggled.connect(on_tracking_toggled)
 
     update_dpr_label(window, tavist, attacks, attack_names)
     window.show()
