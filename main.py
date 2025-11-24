@@ -23,31 +23,41 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Tavist")
 
-        poweratt_layout = QHBoxLayout()
         self.target_ac = QLineEdit()
         self.target_ac.setText("")
         self.target_ac.setInputMask("00")
 
-        self.reccommended_poweratt = QLabel()
-        self.poweratt = QLineEdit("0")
-        poweratt_layout.addWidget(QLabel("Target AC:"))
-        poweratt_layout.addWidget(self.target_ac)
-        poweratt_layout.addWidget(QLabel("Base:"))
-        poweratt_layout.addWidget(self.reccommended_poweratt)
-        poweratt_layout.addWidget(QLabel("Pwr Att:"))
-        poweratt_layout.addWidget(self.poweratt)
-
-        poweratt_group = QGroupBox("Power Attack:")
-        poweratt_group.setLayout(poweratt_layout)
-
-        expertise_layout = QHBoxLayout()
         self.expertise = QLineEdit()
         self.expertise.setText("")
         self.expertise.setInputMask("00")
-        expertise_layout.addWidget(QLabel("Combat Expertise:"))
-        expertise_layout.addWidget(self.expertise)
-        expertise_group = QGroupBox("Combat Expertise:")
-        expertise_group.setLayout(expertise_layout)
+
+        self.auto_button = QPushButton("Auto (use AC)")
+
+        self.two_handed = QPushButton()
+        self.two_handed.setCheckable(True)
+        self.two_handed.setChecked(False)
+        self.two_handed.setText("Two-Handed")
+
+        targeting_layout = QHBoxLayout()
+        targeting_layout.addWidget(QLabel("Est. AC:"))
+        targeting_layout.addWidget(self.target_ac)
+        targeting_layout.addWidget(QLabel("Combat Expertise:"))
+        targeting_layout.addWidget(self.expertise)
+        targeting_layout.addWidget(self.auto_button)
+        targeting_group = QGroupBox("Targeting")
+        targeting_group.setLayout(targeting_layout)
+
+        poweratt_layout = QHBoxLayout()
+        self.reccommended_poweratt = QLabel()
+        self.poweratt = QLineEdit("0")
+        poweratt_layout.addWidget(QLabel("Pwr Att:"))
+        poweratt_layout.addWidget(self.poweratt)
+        poweratt_layout.addWidget(QLabel("Suggested:"))
+        poweratt_layout.addWidget(self.reccommended_poweratt)
+        poweratt_layout.addWidget(self.two_handed)
+
+        poweratt_group = QGroupBox("Attack Mode")
+        poweratt_group.setLayout(poweratt_layout)
 
         status_layout = QHBoxLayout()
 
@@ -81,14 +91,17 @@ class MainWindow(QMainWindow):
         wakasashi_group.setLayout(wakasashi_layout)
 
         main_layout = QVBoxLayout()
+        main_layout.addWidget(targeting_group)
         main_layout.addWidget(poweratt_group)
-        main_layout.addWidget(expertise_group)
         main_layout.addWidget(status_group)
         main_layout.addWidget(katana_group)
         main_layout.addWidget(wakasashi_group)
 
         self.full_attack = QPushButton("Full Attack")
         main_layout.addWidget(self.full_attack)
+
+        self.dpr_label = QLabel("Expected DPR: —")
+        main_layout.addWidget(self.dpr_label)
 
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
@@ -98,6 +111,7 @@ class MainWindow(QMainWindow):
         main_widget = QWidget()
         main_widget.setLayout(main_layout)
         self.setCentralWidget(main_widget)
+        self.resize(900, 700)
 
 
 class BonusType(Enum):
@@ -112,6 +126,7 @@ class BonusType(Enum):
 
 class DamageType(Enum):
     SLASHING = "slashing"
+    PIERCING = "piercing"
 
 
 @dataclass()
@@ -245,7 +260,12 @@ class AttackAction:
         for bonus in damage_roll.bonuses:
             name = (
                 weapon_label
-                if bonus.type in (BonusType.ABILITY, BonusType.ENHANCEMENT)
+                if bonus.type
+                in (
+                    BonusType.ABILITY,
+                    BonusType.ENHANCEMENT,
+                    BonusType.POWER_ATTACK,
+                )
                 else bonus.type.value
                 if bonus.type != BonusType.UNNAMED
                 else bonus.label
@@ -321,21 +341,27 @@ class Tavist:
         self.holy_dice: DamageDice = DamageDice(n=2, d=6, label="holy")
         self.surge_bonus: Bonus = Bonus(bonus=4, label="power-surge")
 
+        self.two_weapon_penalty = Bonus(-2, BonusType.TWO_WEAPONS)
+
         tavist_melee_attack_bonus = [
             Bonus(4, BonusType.ABILITY),
             self.bab,
             self.combat_expertise,
-            Bonus(-2, BonusType.TWO_WEAPONS),
+            self.two_weapon_penalty,
             self.poweratt_attack_penalty,
         ]
 
-        tavist_melee_damage_bonus = [
-            Bonus(4, BonusType.ABILITY),
-            self.poweratt_damage_bonus,
-        ]
+        self.ability_main = Bonus(4, BonusType.ABILITY)
+        self.ability_off = Bonus(2, BonusType.ABILITY)
+        self.poweratt_damage_bonus_main = Bonus(
+            type=BonusType.POWER_ATTACK, label="power attack"
+        )
+        self.poweratt_damage_bonus_off = Bonus(
+            type=BonusType.POWER_ATTACK, label="power attack"
+        )
 
         self.katana_attack = AttackRoll(
-            critical_threshold=17,
+            critical_threshold=17,  # bastard sword 19-20, keen doubles to 17-20
             bonuses=[
                 Bonus(2, BonusType.ENHANCEMENT),
                 Bonus(1, BonusType.WEAPON_FOCUS),
@@ -344,7 +370,8 @@ class Tavist:
         )
 
         self.wakasashi_attack = AttackRoll(
-            bonuses=[Bonus(2, BonusType.ENHANCEMENT), *tavist_melee_attack_bonus]
+            critical_threshold=19,  # short sword 19-20
+            bonuses=[Bonus(2, BonusType.ENHANCEMENT), *tavist_melee_attack_bonus],
         )
 
         self.katana_damage = DamageRoll(
@@ -353,13 +380,21 @@ class Tavist:
                 WeaponDamageDice(d=10, label="weapon"),
                 DamageDice(d=6, label="merciful"),
             ],
-            bonuses=[Bonus(2, BonusType.ENHANCEMENT), *tavist_melee_damage_bonus],
+            bonuses=[
+                Bonus(2, BonusType.ENHANCEMENT),
+                self.ability_main,
+                self.poweratt_damage_bonus_main,
+            ],
         )
 
         self.wakasashi_damage = DamageRoll(
-            type=DamageType.SLASHING,
+            type=DamageType.PIERCING,
             dice=[WeaponDamageDice(d=6, label="weapon"), Dice(d=6, label="merciful")],
-            bonuses=[Bonus(1, BonusType.ENHANCEMENT), *tavist_melee_damage_bonus],
+            bonuses=[
+                Bonus(1, BonusType.ENHANCEMENT),
+                self.ability_off,
+                self.poweratt_damage_bonus_off,
+            ],
         )
 
         self.katana_attack_action = AttackAction(
@@ -369,6 +404,34 @@ class Tavist:
         self.wakasashi_attack_action = AttackAction(
             label="off-hand", attack=self.wakasashi_attack, damage=self.wakasashi_damage
         )
+
+        self.power_attack_value = 0
+        self.two_handed_mode = False
+        self.poweratt_scale_main = 1.0
+        self.poweratt_scale_off = 0.5
+        self.set_power_attack(0)
+
+    def set_power_attack(self, value: int):
+        self.power_attack_value = max(0, value)
+        self.poweratt_attack_penalty.bonus = -self.power_attack_value
+        self.poweratt_damage_bonus_main.bonus = int(self.power_attack_value * self.poweratt_scale_main)
+        self.poweratt_damage_bonus_off.bonus = int(self.power_attack_value * self.poweratt_scale_off)
+
+    def set_two_handed(self, two_handed: bool):
+        self.two_handed_mode = two_handed
+        if two_handed:
+            self.two_weapon_penalty.bonus = 0
+            self.ability_main.bonus = 6  # 1.5x Str
+            self.ability_off.bonus = 0
+            self.poweratt_scale_main = 2.0
+            self.poweratt_scale_off = 0.0
+        else:
+            self.two_weapon_penalty.bonus = -2
+            self.ability_main.bonus = 4
+            self.ability_off.bonus = 2
+            self.poweratt_scale_main = 1.0
+            self.poweratt_scale_off = 0.5
+        self.set_power_attack(self.power_attack_value)
 
 
 def make_dice_toggle(roll: DamageRoll, cond: DamageDice):
@@ -407,6 +470,17 @@ def make_damage_update(bonus: Bonus):
     return damage_update
 
 
+def make_damage_update_scaled(bonus: Bonus, scale: float):
+    def damage_update(text: str):
+        try:
+            val = int(text)
+            bonus.bonus = int(val * scale)
+        except ValueError:
+            bonus.bonus = 0
+
+    return damage_update
+
+
 def make_attack_update(bonus: Bonus):
     def attack_update(text: str):
         try:
@@ -417,16 +491,15 @@ def make_attack_update(bonus: Bonus):
     return attack_update
 
 
-def recommended_poweratt(window):
-    def wrapped(ac: str):
+def make_power_attack_update(tavist: "Tavist"):
+    def update(text: str):
         try:
-            ac_int = int(ac)
+            val = int(text)
         except ValueError:
-            ac_int = 99
-        recommended = str(-min(max(-12, ac_int - 19), 0))
-        window.reccommended_poweratt.setText(recommended)
+            val = 0
+        tavist.set_power_attack(val)
 
-    return wrapped
+    return update
 
 
 def wrap_bonus_adjustment(attack: AttackAction, name: str, bonus: Bonus, value: int):
@@ -435,6 +508,91 @@ def wrap_bonus_adjustment(attack: AttackAction, name: str, bonus: Bonus, value: 
         bonus.bonus = value
 
     return bonus_adjustment
+
+
+def expected_attack_damage(action: AttackAction, ac: int) -> float:
+    atk_bonus = sum(b.bonus for b in action.attack.bonuses)
+    threshold = action.attack.critical_threshold
+
+    mean_normal = sum(d.n * (d.d + 1) / 2 for d in action.damage.dice) + sum(
+        b.bonus for b in action.damage.bonuses
+    )
+    mean_crit = sum(
+        d.n * (d.d + 1) / 2 * (2 if isinstance(d, WeaponDamageDice) else 1)
+        for d in action.damage.dice
+    ) + sum(b.bonus * 2 for b in action.damage.bonuses)
+
+    def hit_for_roll(r: int) -> bool:
+        if r == 1:
+            return False
+        if r == 20:
+            return True
+        return r + atk_bonus >= ac
+
+    hit_count = 0
+    threat_count = 0
+    for r in range(1, 21):
+        if hit_for_roll(r):
+            hit_count += 1
+            if r >= threshold:
+                threat_count += 1
+    hit_prob = hit_count / 20
+    threat_prob = threat_count / 20
+
+    # confirm uses same attack bonus
+    confirm_count = 0
+    for r in range(1, 21):
+        if hit_for_roll(r):
+            confirm_count += 1
+    confirm_prob = confirm_count / 20
+
+    extra_on_crit = mean_crit - mean_normal
+    expected = hit_prob * mean_normal + threat_prob * confirm_prob * extra_on_crit
+    return expected
+
+
+def expected_full_attack(
+    tavist: "Tavist", ac: int, two_handed: bool, attacks: list[int], attack_names: list[str]
+) -> float:
+    # Save state
+    prev_two = tavist.two_handed_mode
+    prev_pa = tavist.power_attack_value
+    prev_bab = tavist.bab.bonus
+
+    tavist.set_two_handed(two_handed)
+    total = 0.0
+
+    for idx, bonus in enumerate(attacks):
+        tavist.bab.bonus = bonus
+        total += expected_attack_damage(tavist.katana_attack_action, ac)
+
+    if not two_handed:
+        tavist.bab.bonus = 12
+        total += expected_attack_damage(tavist.wakasashi_attack_action, ac)
+
+    # Restore
+    tavist.set_two_handed(prev_two)
+    tavist.set_power_attack(prev_pa)
+    tavist.bab.bonus = prev_bab
+    return total
+
+
+def recommend_setup(
+    tavist: "Tavist", ac: int, attacks: list[int], attack_names: list[str]
+) -> tuple[int, bool]:
+    orig_pa = tavist.power_attack_value
+    orig_two = tavist.two_handed_mode
+    best = (0.0, 0, False)
+    for two_handed in (False, True):
+        pa_max = 12 if not two_handed else 12
+        for pa in range(0, pa_max + 1):
+            tavist.set_power_attack(pa)
+            dpr = expected_full_attack(tavist, ac, two_handed, attacks, attack_names)
+            if dpr > best[0]:
+                best = (dpr, pa, two_handed)
+    tavist.set_two_handed(orig_two)
+    tavist.set_power_attack(orig_pa)
+    return best[1], best[2]
 
 
 class DualWriter:
@@ -543,8 +701,9 @@ def wrap_full_attack(
             )()
             results.append(perform_attack_with_log(tavist.katana_attack_action, window)())
 
-        wrap_bonus_adjustment(tavist.wakasashi_attack_action, "off-hand", tavist.bab, 12)()
-        results.append(perform_attack_with_log(tavist.wakasashi_attack_action, window)())
+        if not tavist.two_handed_mode:
+            wrap_bonus_adjustment(tavist.wakasashi_attack_action, "off-hand", tavist.bab, 12)()
+            results.append(perform_attack_with_log(tavist.wakasashi_attack_action, window)())
 
         ranges = summarize_damage_ranges(results)
         if ranges:
@@ -588,6 +747,50 @@ def wrap_full_attack(
     return do_full_attack
 
 
+def wrap_auto_recommend(
+    window: MainWindow, tavist: "Tavist", attacks: list[int], attack_names: list[str]
+):
+    def do_auto():
+        try:
+            ac = int(window.target_ac.text() or "0")
+        except ValueError:
+            ac = 99
+        pa, two = recommend_setup(tavist, ac, attacks, attack_names)
+        tavist.set_two_handed(two)
+        window.two_handed.setChecked(two)
+        tavist.set_power_attack(pa)
+        window.poweratt.blockSignals(True)
+        window.poweratt.setText(str(pa))
+        window.poweratt.blockSignals(False)
+        window.reccommended_poweratt.setText(str(pa))
+        mode = "two-handed" if two else "dual-wield"
+        append_log(window, f"Auto set for AC {ac}: PA {pa}, {mode}")
+
+    return do_auto
+
+
+def update_dpr_label(
+    window: MainWindow, tavist: "Tavist", attacks: list[int], attack_names: list[str]
+):
+    try:
+        ac = int(window.target_ac.text() or "0")
+    except ValueError:
+        ac = 99
+    # compute with current settings
+    curr_two = tavist.two_handed_mode
+    curr_pa = tavist.power_attack_value
+    dpr = expected_full_attack(tavist, ac, curr_two, attacks, attack_names)
+    window.dpr_label.setText(f"Expected DPR (AC {ac}): {dpr:.1f}")
+
+    # also show best as a hint
+    best_pa, best_two = recommend_setup(tavist, ac, attacks, attack_names)
+    mode = "2H" if best_two else "TWF"
+    window.reccommended_poweratt.setText(str(best_pa))
+    window.dpr_label.setText(
+        f"Expected DPR (AC {ac}): {dpr:.1f} | Best: PA {best_pa} {mode}"
+    )
+
+
 def main() -> None:
     app = QApplication([])
     window = MainWindow()
@@ -619,6 +822,17 @@ def main() -> None:
         wrap_full_attack(window, tavist, attack_names, attacks)
     )
 
+    def apply_two_handed(checked: bool):
+        tavist.set_two_handed(checked)
+        window.wakasashi_attack.setEnabled(not checked)
+        update_dpr_label(window, tavist, attacks, attack_names)
+
+    window.two_handed.toggled.connect(apply_two_handed)
+    window.auto_button.clicked.connect(
+        wrap_auto_recommend(window, tavist, attacks, attack_names)
+    )
+    apply_two_handed(window.two_handed.isChecked())
+
     window.evil.clicked.connect(
         make_dice_toggle(tavist.katana_damage, tavist.holy_dice)
     )
@@ -629,16 +843,20 @@ def main() -> None:
         make_bonus_toggle(tavist.wakasashi_damage, tavist.surge_bonus)
     )
 
-    window.target_ac.textChanged.connect(recommended_poweratt(window))
+    window.poweratt.textChanged.connect(make_power_attack_update(tavist))
     window.poweratt.textChanged.connect(
-        make_damage_update(tavist.poweratt_damage_bonus)
-    )
-    window.poweratt.textChanged.connect(
-        make_attack_update(tavist.poweratt_attack_penalty)
+        lambda _: update_dpr_label(window, tavist, attacks, attack_names)
     )
 
     window.expertise.textChanged.connect(make_attack_update(tavist.combat_expertise))
+    window.expertise.textChanged.connect(
+        lambda _: update_dpr_label(window, tavist, attacks, attack_names)
+    )
+    window.target_ac.textChanged.connect(
+        lambda _: update_dpr_label(window, tavist, attacks, attack_names)
+    )
 
+    update_dpr_label(window, tavist, attacks, attack_names)
     window.show()
     app.exec()
 
