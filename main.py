@@ -25,11 +25,9 @@ class MainWindow(QMainWindow):
 
         self.target_ac = QLineEdit()
         self.target_ac.setText("")
-        self.target_ac.setInputMask("00")
 
         self.expertise = QLineEdit()
         self.expertise.setText("")
-        self.expertise.setInputMask("00")
 
         self.auto_button = QPushButton("Auto (use AC)")
 
@@ -825,6 +823,7 @@ def main() -> None:
     def apply_two_handed(checked: bool):
         tavist.set_two_handed(checked)
         window.wakasashi_attack.setEnabled(not checked)
+        tavist.bab.bonus = attacks[0]
         update_dpr_label(window, tavist, attacks, attack_names)
 
     window.two_handed.toggled.connect(apply_two_handed)
