@@ -481,6 +481,45 @@ def test_accumulate_known_hits_uses_confirm_for_damage():
     assert tracker.damage_done == 11
 
 
+def test_nat20_not_used_for_bounds(monkeypatch):
+    import os
+    os.environ["QT_QPA_PLATFORM"] = "offscreen"
+    from PySide6.QtWidgets import QApplication
+    import main as app_main
+
+    qapp = QApplication.instance() or QApplication([])
+    tracker = app_main.ACTargetTracker()
+    tracker.lower = 10
+    tracker.upper = 20
+    results = [{"attack_total": 30, "confirm_total": 15, "damage_normal": 5, "damage_critical": 9, "threat": True, "natural_twenty": True}]
+    # accumulate should not tighten bounds but should add damage from nat20
+    tracker_before = (tracker.lower, tracker.upper, tracker.damage_done)
+    app_main.accumulate_known_hits(tracker, results)
+    assert tracker_before[0] == tracker.lower
+    assert tracker_before[1] == tracker.upper
+    assert tracker.damage_done == tracker_before[2] + 5
+    qapp.quit()
+
+
+def test_nat1_always_miss():
+    from tavist.model import AttackAction, AttackRoll, DamageRoll, DamageType, WeaponDamageDice
+    from tavist.model import Bonus
+    from tavist.model import BonusType
+    import tavist.model as model
+
+    def fake_randint(a, b):
+        return 1
+
+    model.randint = fake_randint
+    attack = AttackRoll(bonuses=[Bonus(100, BonusType.BAB)], critical_threshold=20)
+    damage = DamageRoll(type=DamageType.SLASHING, dice=[WeaponDamageDice(d=10, label="weapon")])
+    action = AttackAction(label="nat1", attack=attack, damage=damage)
+    result = action.do_attack()
+    assert result["natural_one"] is True
+    assert result["attack_total"] > 1
+    assert result["damage_normal"] >= 0
+
+
 def test_new_opponent_resets_damage(monkeypatch):
     import os
     os.environ["QT_QPA_PLATFORM"] = "offscreen"

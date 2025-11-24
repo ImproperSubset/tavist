@@ -122,6 +122,8 @@ class AttackAction:
         attack_die = attack_roll.rolls[0][0]
         threat = attack_die >= self.attack.critical_threshold
         confirm_roll = self.attack.roll() if threat else None
+        nat_one = attack_die == 1
+        nat_twenty = attack_die == 20
 
         damage_roll = self.damage.roll(critical=False)
         damage_breakdown: dict[str, dict[str, int]] = {}
@@ -186,9 +188,11 @@ class AttackAction:
             f"Attack total: {attack_roll.total} (d20={attack_die}{' CRIT THREAT' if threat else ''})",
             f"Attack mods: {attack_mods_text}",
         ]
-        if threat and confirm_roll is not None:
+        if nat_one:
+            lines.append("Natural 1: automatic miss")
+        elif threat and confirm_roll is not None:
             lines.append(
-                f"Confirm roll: {confirm_roll.total} (crit confirms on AC ≤ {confirm_roll.total})"
+                f"Confirm roll: {confirm_roll.total} (crit confirms on AC {confirm_roll.total})"
             )
         else:
             lines.append("No critical threat")
@@ -213,6 +217,8 @@ class AttackAction:
             "damage_critical": damage_crit,
             "breakdown_normal": breakdown_normal,
             "breakdown_critical": breakdown_critical,
+            "natural_one": nat_one,
+            "natural_twenty": nat_twenty,
         }
 
 

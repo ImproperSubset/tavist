@@ -2,7 +2,7 @@ from contextlib import redirect_stdout
 import sys
 import html
 import re
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCursor, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -31,12 +31,8 @@ from tavist.model import (
     expected_full_attack,
     recommend_setup,
 )
-from tavist.tracking import (
-    ACTargetTracker,
-    format_bound,
-    accumulate_known_hits,
-    damage_for_hit,
-)
+from tavist.tracking import ACTargetTracker, format_bound, accumulate_known_hits, damage_for_hit
+from tavist.controller import format_attack_line, summarize_damage_ranges
 
 
 class MainWindow(QMainWindow):
@@ -49,9 +45,12 @@ class MainWindow(QMainWindow):
 
         self.target_ac = QLineEdit()
         self.target_ac.setText("")
+        int_validator = QIntValidator(0, 99, self)
+        self.target_ac.setValidator(int_validator)
 
         self.expertise = QLineEdit()
         self.expertise.setText("")
+        self.expertise.setValidator(int_validator)
 
         self.auto_button = QPushButton("New Opponent")
 
@@ -72,20 +71,27 @@ class MainWindow(QMainWindow):
         extra_layout = QHBoxLayout()
         self.ext_hit = QLineEdit("0")
         self.ext_str = QLineEdit("0")
+        self.ext_hit.setValidator(QIntValidator(-99, 99, self))
+        self.ext_str.setValidator(QIntValidator(-99, 99, self))
         self.fatigued = QPushButton("Fatigued")
         self.fatigued.setCheckable(True)
         self.fatigued.setChecked(False)
+        self.tracking = QPushButton("Tracking")
+        self.tracking.setCheckable(True)
+        self.tracking.setChecked(True)
         extra_layout.addWidget(QLabel("Ext Hit:"))
         extra_layout.addWidget(self.ext_hit)
         extra_layout.addWidget(QLabel("Ext Str:"))
         extra_layout.addWidget(self.ext_str)
         extra_layout.addWidget(self.fatigued)
+        extra_layout.addWidget(self.tracking)
         extra_group = QGroupBox("External Effects")
         extra_group.setLayout(extra_layout)
 
         poweratt_layout = QHBoxLayout()
         self.reccommended_poweratt = QLabel()
         self.poweratt = QLineEdit("0")
+        self.poweratt.setValidator(QIntValidator(0, 12, self))
         self.poweratt_lock = QCheckBox("Lock")
         poweratt_layout.addWidget(QLabel("Pwr Att:"))
         poweratt_layout.addWidget(self.poweratt)
@@ -108,10 +114,6 @@ class MainWindow(QMainWindow):
         self.surge.setCheckable(True)
         self.surge.setChecked(False)
         self.surge.setText("Power Surge")
-
-        self.tracking = QPushButton("Tracking")
-        self.tracking.setCheckable(True)
-        self.tracking.setChecked(True)
 
         status_layout.addWidget(self.evil)
         status_layout.addWidget(self.surge)
@@ -162,6 +164,38 @@ class MainWindow(QMainWindow):
         self.resize(900, 700)
 
 
+class DualWriter:
+    def __init__(self):
+        self.parts: list[str] = []
+
+    def write(self, text: str):
+        sys.__stdout__.write(text)
+        self.parts.append(text)
+
+    def flush(self):
+        sys.__stdout__.flush()
+
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
+def append_log(window: MainWindow, text: str):
+    def _escape(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;")
+
+    for raw_line in text.split("\n"):
+        escaped = _escape(raw_line)
+        bold_match = re.search(r"\*\*(.+?)\*\*", escaped)
+        if bold_match:
+            content = re.sub(r"\*\*(.+?)\*\*", r"\1", escaped)
+            window.log_output.append(f'<span style="font-weight:bold">{content}</span>')
+        else:
+            window.log_output.append(f'<span style="font-weight:normal">{escaped}</span>')
+    cursor = window.log_output.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    window.log_output.setTextCursor(cursor)
+    window.log_output.ensureCursorVisible()
+
 
 def make_dice_toggle(roll: DamageRoll, cond: DamageDice):
     def damage_toggle(checked: bool):
@@ -187,16 +221,6 @@ def make_bonus_toggle(roll: DamageRoll, cond: Bonus):
                     roll.bonuses.remove(cond)
 
     return damage_toggle
-
-
-def make_damage_update(bonus: Bonus):
-    def damage_update(text: str):
-        try:
-            bonus.bonus = int(text)
-        except ValueError:
-            bonus.bonus = 0
-
-    return damage_update
 
 
 def make_damage_update_scaled(bonus: Bonus, scale: float):
@@ -231,48 +255,6 @@ def make_power_attack_update(tavist: "Tavist"):
     return update
 
 
-def wrap_bonus_adjustment(attack: AttackAction, name: str, bonus: Bonus, value: int):
-    def bonus_adjustment():
-        attack.label = name
-        bonus.bonus = value
-
-    return bonus_adjustment
-
-
-class DualWriter:
-    def __init__(self):
-        self.parts: list[str] = []
-
-    def write(self, text: str):
-        sys.__stdout__.write(text)
-        self.parts.append(text)
-
-    def flush(self):
-        sys.__stdout__.flush()
-
-    def text(self) -> str:
-        return "".join(self.parts)
-
-
-def append_log(window: MainWindow, text: str):
-    def _escape(s: str) -> str:
-        # Minimal escaping: leave ">" intact for readability.
-        return s.replace("&", "&amp;").replace("<", "&lt;")
-
-    for raw_line in text.split("\n"):
-        escaped = _escape(raw_line)
-        bold_match = re.search(r"\*\*(.+?)\*\*", escaped)
-        if bold_match:
-            content = re.sub(r"\*\*(.+?)\*\*", r"\1", escaped)
-            window.log_output.append(f'<span style="font-weight:bold">{content}</span>')
-        else:
-            window.log_output.append(f'<span style="font-weight:normal">{escaped}</span>')
-    cursor = window.log_output.textCursor()
-    cursor.movePosition(QTextCursor.End)
-    window.log_output.setTextCursor(cursor)
-    window.log_output.ensureCursorVisible()
-
-
 def perform_attack_with_log(attack: AttackAction, window: MainWindow):
     def do_attack():
         writer = DualWriter()
@@ -291,7 +273,9 @@ def compute_damage_for_ac(results: list[dict], ac: int) -> tuple[int, dict[str, 
     total = 0
     breakdown: dict[str, int] = {}
     for r in results:
-        if ac > r["attack_total"]:
+        if r.get("natural_one"):
+            continue
+        if not r.get("natural_twenty") and ac > r["attack_total"]:
             continue
         use_crit = r["threat"] and r["confirm_total"] is not None and ac <= r["confirm_total"]
         parts = r["breakdown_critical"] if use_crit else r["breakdown_normal"]
@@ -301,11 +285,34 @@ def compute_damage_for_ac(results: list[dict], ac: int) -> tuple[int, dict[str, 
     return total, breakdown
 
 
+def format_attack_line(r: dict, tracker: ACTargetTracker | None) -> str:
+    certainly_hits = tracker is not None and tracker.upper != 99 and r["attack_total"] >= tracker.upper
+    normal_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())) or "none"
+    crit_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())) or "none"
+    if r.get("natural_one"):
+        line = f"{r['label']}: natural 1 (automatic miss)"
+    elif r["threat"] and r.get("confirm_total") is not None:
+        if tracker and tracker.upper != 99 and r["confirm_total"] >= tracker.upper:
+            line = (
+                f"{r['label']}: hits AC {r['attack_total']} | crit confirmed at AC {r['confirm_total']} "
+                f"crit {r['damage_critical']} dmg [{crit_bd}]"
+            )
+        else:
+            line = (
+                f"{r['label']}: hits AC {r['attack_total']} | threat (crit confirms on AC {r['confirm_total']}) "
+                f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]"
+            )
+    else:
+        line = (
+            f"{r['label']}: hits AC {r['attack_total']} | damage {r['damage_normal']} dmg "
+            f"[{', '.join(f'{k} {v}' for k, v in sorted(r['breakdown_normal'].items())) or 'none'}]"
+        )
+    if certainly_hits:
+        line = f"* **{line}**"
+    return line
+
+
 def summarize_damage_ranges(results: list[dict]) -> list[tuple[int | None, int | None, int, dict[str, int]]]:
-    """
-    Returns list of (lower_exclusive, upper_inclusive, damage).
-    lower_exclusive is None for the lowest band; (upper, None, damage) means AC > upper.
-    """
     thresholds = set()
     for r in results:
         thresholds.add(r["attack_total"])
@@ -317,7 +324,7 @@ def summarize_damage_ranges(results: list[dict]) -> list[tuple[int | None, int |
     raw_ranges: list[tuple[int | None, int | None, int, dict[str, int]]] = []
 
     top = ordered[0]
-    raw_ranges.append((top, None, 0, {}))  # AC > top
+    raw_ranges.append((top, None, 0, {}))
 
     for idx, upper in enumerate(ordered):
         lower = ordered[idx + 1] if idx + 1 < len(ordered) else None
@@ -338,7 +345,6 @@ def summarize_damage_ranges(results: list[dict]) -> list[tuple[int | None, int |
         else:
             merged.append((lower, upper, dmg, breakdown))
 
-    # normalize order: descending upper
     merged_sorted = sorted(merged, key=lambda x: (-1 if x[1] is None else -x[1]))
     return merged_sorted
 
@@ -378,31 +384,9 @@ def wrap_full_attack(
                     append_log(window, f"{lower} < AC ≤ {upper}: {damage} dmg{bd_text()}")
         if results:
             append_log(window, "--- Per attack ---")
+            tracker = getattr(window, "_ac_tracker", None)
             for r in results:
-                tracker = getattr(window, "_ac_tracker", None)
-                certainly_hits = (
-                    tracker is not None and tracker.upper != 99 and r["attack_total"] >= tracker.upper
-                )
-                line = ""
-                if r["threat"] and r["confirm_total"] is not None:
-                    normal_bd = ", ".join(
-                        f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())
-                    ) or "none"
-                    crit_bd = ", ".join(
-                        f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())
-                    ) or "none"
-                    line = (
-                        f"{r['label']}: hits AC {r['attack_total']} | threat (crit confirms on AC {r['confirm_total']}) "
-                        f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]"
-                    )
-                else:
-                    line = (
-                        f"{r['label']}: hits AC {r['attack_total']} | damage {r['damage_normal']} dmg "
-                        f"[{', '.join(f'{k} {v}' for k, v in sorted(r['breakdown_normal'].items())) or 'none'}]"
-                    )
-                if certainly_hits:
-                    line = f"* **{line}**"
-                append_log(window, line)
+                append_log(window, format_attack_line(r, tracker))
         append_log(window, "")
 
         return results
@@ -419,49 +403,20 @@ def wrap_single_attack(window: MainWindow, tavist: "Tavist", attacks: list[int],
         results.append(perform_attack_with_log(tavist.katana_attack_action, window)())
 
         if results:
-            r = results[0]
-            normal_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())) or "none"
-            crit_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())) or "none"
             tracker = getattr(window, "_ac_tracker", None)
-            certainly_hits = (
-                tracker is not None and tracker.upper != 99 and r["attack_total"] >= tracker.upper
-            )
-            line = (
-                f"{r['label']}: hits AC {r['attack_total']} | "
-                f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]"
-            )
-            if certainly_hits:
-                line = f"* **{line}**"
-            append_log(window, line)
+            append_log(window, format_attack_line(results[0], tracker))
             append_log(window, "")
         return results
 
     return do_attack
 
 
-def wrap_single_attack(window: MainWindow, tavist: "Tavist", attacks: list[int], attack_names: list[str]):
-    def do_attack():
-        results: list[dict] = []
-        for idx, bonus in enumerate(attacks):
-            wrap_bonus_adjustment(
-                tavist.katana_attack_action, attack_names[idx], tavist.bab, bonus
-            )()
-            res = perform_attack_with_log(tavist.katana_attack_action, window)()
-            results.append(res)
-            break  # only the first available attack bonus (primary attack)
+def wrap_bonus_adjustment(attack: AttackAction, name: str, bonus: Bonus, value: int):
+    def bonus_adjustment():
+        attack.label = name
+        bonus.bonus = value
 
-        if results:
-            r = results[0]
-            normal_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())) or "none"
-            crit_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())) or "none"
-            append_log(
-                window,
-                f"{r['label']}: hits AC {r['attack_total']} | "
-                f"normal {r['damage_normal']} dmg [{normal_bd}] / crit {r['damage_critical']} dmg [{crit_bd}]",
-            )
-            append_log(window, "")
-
-    return do_attack
+    return bonus_adjustment
 
 
 def wrap_auto_recommend(
@@ -497,13 +452,10 @@ def update_dpr_label(
         ac = int(window.target_ac.text() or "0")
     except ValueError:
         ac = 99
-    # compute with current settings
     curr_two = tavist.two_handed_mode
-    curr_pa = tavist.power_attack_value
     dpr = expected_full_attack(tavist, ac, curr_two, attacks, attack_names)
     window.dpr_label.setText(f"Expected DPR (AC {ac}): {dpr:.1f}")
 
-    # also show best as a hint
     best_pa, best_two = recommend_setup(tavist, ac, attacks, attack_names)
     mode = "2H" if best_two else "TWF"
     window.reccommended_poweratt.setText(str(best_pa))
@@ -541,7 +493,7 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
     candidates = [
         r
         for r in results
-        if (tracker.lower < r["attack_total"] < tracker.upper)
+        if (tracker.lower < r["attack_total"] < tracker.upper and not r.get("natural_twenty"))
         or (r.get("confirm_total") and tracker.lower < r["confirm_total"] < tracker.upper)
     ]
     if not candidates:
@@ -557,10 +509,8 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
 
     for r in sorted(candidates, key=lambda x: x["attack_total"]):
         label = f"{r['label']} (AC {r['attack_total']})"
-        if r.get("threat"):
-            confirm = r.get("confirm_total")
-            if confirm:
-                label += f" / confirm {confirm}"
+        if r.get("threat") and r.get("confirm_total"):
+            label += f" / confirm {r['confirm_total']}"
         btn = QPushButton(label)
         btn.setEnabled(True)
 
@@ -590,8 +540,10 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
             chosen = selection["total"]
             for r in candidates:
                 if r["attack_total"] >= chosen:
-                    hit_cap = r.get("confirm_total") or r["attack_total"]
-                    tracker.record_hit(hit_cap)
+                    if r.get("confirm_total"):
+                        tracker.record_hit(r["confirm_total"])
+                    else:
+                        tracker.record_hit(r["attack_total"])
                     tracker.damage_done += damage_for_hit(r, tracker.upper)
                 else:
                     tracker.record_miss(r["attack_total"])
@@ -660,7 +612,6 @@ def main() -> None:
     window.surge.clicked.connect(
         make_bonus_toggle(tavist.katana_attack, tavist.surge_bonus_attack_main)
     )
-    # off-hand surge attack bonus applies only in dual-wield mode; handled in attack setup
 
     window.poweratt.textChanged.connect(make_power_attack_update(tavist))
     window.poweratt.textChanged.connect(
@@ -676,13 +627,16 @@ def main() -> None:
     )
     window.ext_hit.textChanged.connect(lambda _: apply_external(window, tavist, attacks, attack_names))
     window.ext_str.textChanged.connect(lambda _: apply_external(window, tavist, attacks, attack_names))
+
     def apply_fatigue(checked: bool):
         tavist.set_fatigued(checked)
         update_dpr_label(window, tavist, attacks, attack_names)
     window.fatigued.toggled.connect(apply_fatigue)
+
     def on_tracking_toggled(checked: bool):
         if checked:
             tracker.reset()
+            window.damage_done.setText("Damage done: 0")
     window.tracking.toggled.connect(on_tracking_toggled)
 
     update_dpr_label(window, tavist, attacks, attack_names)
