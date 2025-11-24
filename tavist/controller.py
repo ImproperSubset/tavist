@@ -57,16 +57,31 @@ def summarize_damage_ranges(results: List[dict]) -> List[Tuple[int | None, int |
 
 
 def format_attack_line(r: dict, tracker: ACTargetTracker | None) -> str:
-    certainly_hits = tracker is not None and tracker.upper != 99 and r["attack_total"] >= tracker.upper
+    certainly_hits = False
+    if tracker and tracker.upper != 99:
+        if r.get("natural_twenty"):
+            certainly_hits = True
+        elif not r.get("natural_one") and r["attack_total"] >= tracker.upper:
+            certainly_hits = True
     normal_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_normal"].items())) or "none"
     crit_bd = ", ".join(f"{k} {v}" for k, v in sorted(r["breakdown_critical"].items())) or "none"
     if r.get("natural_one"):
         line = f"{r['label']}: natural 1 (automatic miss)"
+    elif r.get("natural_twenty"):
+        base_line = f"{r['label']}: natural 20 | damage {r['damage_normal']} dmg [{normal_bd}]"
+        if r["threat"] and r.get("confirm_total"):
+            base_line += f" | threat (crit confirms on AC {r['confirm_total']}) crit {r['damage_critical']} dmg [{crit_bd}]"
+        line = base_line
     elif r["threat"] and r.get("confirm_total") is not None:
         if tracker and tracker.upper != 99 and r["confirm_total"] >= tracker.upper:
             line = (
                 f"{r['label']}: hits AC {r['attack_total']} | crit confirmed at AC {r['confirm_total']} "
                 f"crit {r['damage_critical']} dmg [{crit_bd}]"
+            )
+        elif tracker and tracker.lower != 0 and r["confirm_total"] <= tracker.lower:
+            line = (
+                f"{r['label']}: hits AC {r['attack_total']} | threat (confirm AC {r['confirm_total']} failed) "
+                f"normal {r['damage_normal']} dmg [{normal_bd}]"
             )
         else:
             line = (

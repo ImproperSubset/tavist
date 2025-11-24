@@ -472,6 +472,31 @@ def test_tracking_dialog_prompts_on_confirm_within_bounds(monkeypatch):
     qapp.quit()
 
 
+def test_format_attack_line_confirm_failure(monkeypatch):
+    from tavist.tracking import ACTargetTracker
+    import main as app_main
+
+    tracker = ACTargetTracker()
+    tracker.lower = 18
+    tracker.upper = 20
+    r = {
+        "label": "crit-fail",
+        "attack_total": 35,
+        "damage_normal": 10,
+        "damage_critical": 20,
+        "breakdown_normal": {"slashing": 10},
+        "breakdown_critical": {"slashing": 20},
+        "threat": True,
+        "confirm_total": 17,
+        "natural_one": False,
+        "natural_twenty": False,
+    }
+    line = app_main.format_attack_line(r, tracker)
+    assert "failed" in line
+    assert "crit confirmed" not in line
+    assert line.startswith("* **")
+
+
 def test_accumulate_known_hits_uses_confirm_for_damage():
     from tavist.tracking import ACTargetTracker, accumulate_known_hits
 
