@@ -1,20 +1,21 @@
-from dataclasses import KW_ONLY, dataclass, field
-from logging import CRITICAL, critical
-from multiprocessing import Value
-from random import randint
+from contextlib import redirect_stdout
+import sys
+from dataclasses import dataclass, field
 from enum import Enum
+from random import randint
+from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
+    QLabel,
+    QGroupBox,
+    QHBoxLayout,
+    QLineEdit,
     QMainWindow,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
-    QHBoxLayout,
-    QGroupBox,
     QWidget,
-    QLineEdit,
-    QLabel,
 )
-from copy import copy
 
 
 class MainWindow(QMainWindow):
@@ -85,6 +86,11 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(status_group)
         main_layout.addWidget(katana_group)
         main_layout.addWidget(wakasashi_group)
+
+        self.log_output = QPlainTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setMinimumHeight(160)
+        main_layout.addWidget(self.log_output)
 
         main_widget = QWidget()
         main_widget.setLayout(main_layout)
@@ -375,19 +381,49 @@ def recommended_poweratt(window):
     return wrapped
 
 
-def wrap_attack(attack: AttackAction):
-    def do_attack():
-        attack.do_attack()
-
-    return do_attack
-
-
 def wrap_bonus_adjustment(attack: AttackAction, name: str, bonus: Bonus, value: int):
     def bonus_adjustment():
         attack.label = name
         bonus.bonus = value
 
     return bonus_adjustment
+
+
+class DualWriter:
+    def __init__(self):
+        self.parts: list[str] = []
+
+    def write(self, text: str):
+        sys.__stdout__.write(text)
+        self.parts.append(text)
+
+    def flush(self):
+        sys.__stdout__.flush()
+
+    def text(self) -> str:
+        return "".join(self.parts)
+
+
+def append_log(window: MainWindow, text: str):
+    window.log_output.appendPlainText(text)
+    cursor = window.log_output.textCursor()
+    cursor.movePosition(QTextCursor.End)
+    window.log_output.setTextCursor(cursor)
+    window.log_output.ensureCursorVisible()
+
+
+def wrap_attack_with_log(attack: AttackAction, window: MainWindow):
+    def do_attack():
+        writer = DualWriter()
+        with redirect_stdout(writer):
+            attack.do_attack()
+        log_text = writer.text().rstrip()
+        if log_text:
+            append_log(window, f"[{attack.label}]")
+            append_log(window, log_text)
+            append_log(window, "")
+
+    return do_attack
 
 
 def main() -> None:
@@ -404,7 +440,7 @@ def main() -> None:
                 tavist.katana_attack_action, attack_names[idx], tavist.bab, attacks[idx]
             )
         )
-        attack.clicked.connect(wrap_attack(tavist.katana_attack_action))
+        attack.clicked.connect(wrap_attack_with_log(tavist.katana_attack_action, window))
         attack.setText(attack_names[idx])
 
     window.wakasashi_attack.clicked.connect(
@@ -412,7 +448,9 @@ def main() -> None:
             tavist.wakasashi_attack_action, "off-hand", tavist.bab, 12
         )
     )
-    window.wakasashi_attack.clicked.connect(wrap_attack(tavist.wakasashi_attack_action))
+    window.wakasashi_attack.clicked.connect(
+        wrap_attack_with_log(tavist.wakasashi_attack_action, window)
+    )
     window.wakasashi_attack.setText(tavist.wakasashi_attack_action.label)
 
     window.evil.clicked.connect(
