@@ -2,6 +2,7 @@ from contextlib import redirect_stdout
 import sys
 import html
 import re
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QTextCursor, QIntValidator
 from PySide6.QtWidgets import (
     QApplication,
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
     QDialog,
     QCheckBox,
+    QSizeGrip,
 )
 from tavist.model import (
     AttackAction,
@@ -39,10 +41,198 @@ from tavist.controller import (
 )
 
 
+DARK_THEME_QSS = """
+QMainWindow, QDialog {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+}
+
+QWidget {
+    font-family: "Segoe UI", "Roboto", "Helvetica Neue", sans-serif;
+    font-size: 18px;
+    color: #cdd6f4;
+    background-color: #1e1e2e;
+}
+
+QGroupBox {
+    border: 1px solid #45475a;
+    border-radius: 8px;
+    margin-top: 12px;
+    padding-top: 10px;
+    font-weight: bold;
+    color: #89b4fa;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 5px;
+    left: 10px;
+}
+
+QPushButton {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #3b3e52, stop:1 #313244);
+    border: 1px solid #45475a;
+    border-bottom: 2px solid #1e1e2e;  /* 3D shadow effect */
+    border-radius: 6px;
+    padding: 8px 16px;
+    color: #cdd6f4;
+    font-weight: 600;
+}
+
+QPushButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #4a4d62, stop:1 #3b3e52);
+    border-color: #585b70;
+    border-bottom: 2px solid #252535;
+    /* Lift effect on hover */
+    padding: 7px 16px 9px 16px;
+}
+
+QPushButton:pressed {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #1e1e2e, stop:1 #252535);
+    border: 1px solid #89b4fa;
+    border-bottom: 1px solid #89b4fa;  /* Flattened when pressed */
+    /* Pressed down effect */
+    padding: 9px 16px 7px 16px;
+}
+
+QPushButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                stop:0 #a6b9ff, stop:1 #89b4fa);
+    color: #1e1e2e;
+    border: 1px solid #89b4fa;
+    border-bottom: 2px solid #6c7fa8;
+    font-weight: 700;
+}
+
+QLineEdit {
+    background-color: #181825;
+    border: 1px solid #45475a;
+    border-radius: 4px;
+    padding: 4px;
+    color: #cdd6f4;
+    selection-background-color: #89b4fa;
+    selection-color: #1e1e2e;
+}
+
+QLineEdit:focus {
+    border: 1px solid #89b4fa;
+}
+
+QTextEdit {
+    background-color: #11111b;
+    border: 1px solid #45475a;
+    border-radius: 6px;
+    padding: 8px;
+    color: #cdd6f4;
+    font-family: "Consolas", "Monaco", monospace;
+}
+
+QLabel {
+    color: #a6adc8;
+}
+
+QCheckBox {
+    spacing: 5px;
+    color: #cdd6f4;
+}
+
+QCheckBox::indicator {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid #45475a;
+    background-color: #313244;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #89b4fa;
+    border-color: #89b4fa;
+    image: url(data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMxZTFlMmUiIHN0cm9rZS13aWR0aD0iMyIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cG9seWxpbmUgcG9pbnRzPSIyMCA2IDkgMTcgNCAxMiI+PC9wb2x5bGluZT48L3N2Zz4=);
+}
+"""
+
+
+
+class TitleBar(QWidget):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.host_window = parent
+        # Make title bar background transparent so container border shows through
+        self.setStyleSheet("background-color: transparent;")
+        self.layout = QHBoxLayout()
+        self.layout.setContentsMargins(10, 5, 10, 5)
+        self.title = QLabel("Tavist")
+        self.title.setStyleSheet("font-weight: bold; font-size: 16px; color: #cdd6f4; border: none; background-color: transparent;")
+
+        self.btn_minimize = QPushButton("—")
+        self.btn_minimize.clicked.connect(parent.showMinimized)
+        self.btn_minimize.setFixedSize(30, 30)
+        self.btn_minimize.setStyleSheet("background-color: #313244; color: #cdd6f4; border: none; border-radius: 4px;")
+
+        self.btn_close = QPushButton("✕")
+        self.btn_close.clicked.connect(parent.close)
+        self.btn_close.setFixedSize(30, 30)
+        self.btn_close.setStyleSheet("background-color: #f38ba8; color: #1e1e2e; border: none; border-radius: 4px;")
+
+        self.layout.addWidget(self.title)
+        self.layout.addStretch()
+        self.layout.addWidget(self.btn_minimize)
+        self.layout.addWidget(self.btn_close)
+        self.setLayout(self.layout)
+
+        self.oldPos = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            # Try to let the OS handle the move (smoother, no clipping)
+            if self.host_window.windowHandle():
+                if self.host_window.windowHandle().startSystemMove():
+                    return
+            # Fallback to manual dragging
+            self.oldPos = event.globalPosition().toPoint()
+
+    def mouseMoveEvent(self, event):
+        if self.oldPos is not None:
+            delta = event.globalPosition().toPoint() - self.oldPos
+            self.host_window.move(self.host_window.pos() + delta)
+            self.oldPos = event.globalPosition().toPoint()
+
+    def mouseReleaseEvent(self, event):
+        self.oldPos = None
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Tavist")
+        self.setWindowFlags(Qt.FramelessWindowHint)
+        # self.setAttribute(Qt.WA_TranslucentBackground) # Removed to prevent artifacts
+        
+        # Set minimum window size
+        self.setMinimumSize(600, 500)
+        
+        # Main container to hold the title bar and content
+        container = QWidget()
+        container.setObjectName("MainContainer")
+        # Subtle border outline
+        container.setStyleSheet("#MainContainer { border: 1px solid #45475a; background-color: #1e1e2e; border-radius: 8px; }")
+        
+        outer_layout = QVBoxLayout()
+        outer_layout.setContentsMargins(2, 2, 2, 2)  # Margins to show border and rounded corners
+        outer_layout.setSpacing(0)
+        
+        self.title_bar = TitleBar(self)
+        outer_layout.addWidget(self.title_bar)
+
+        # Content widget for the actual app controls
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(20, 10, 20, 20)
+
         font = self.font()
         font.setPointSize(font.pointSize() + 2)
         self.setFont(font)
@@ -126,21 +316,56 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox("Status")
         status_group.setLayout(status_layout)
 
-        katana_layout = QHBoxLayout()
+        # Attack buttons group
+        attacks_layout = QVBoxLayout()
+        
+        # Darker green for both attack buttons
+        attack_button_style = """
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, 
+                                            stop:0 #7fb574, stop:1 #6a9d5f);
+                color: #1e1e2e;
+                border: 1px solid #5a8d4f;
+                border-bottom: 2px solid #4a7d3f;
+                font-weight: 600;
+                padding: 8px 16px;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                            stop:0 #8fc584, stop:1 #7ab56f);
+                border-color: #6a9d5f;
+                border-bottom: 2px solid #5a8d4f;
+                padding: 7px 16px 9px 16px;
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                            stop:0 #3a5d2f, stop:1 #2a4d1f);
+                border: 1px solid #4a7d3f;
+                border-bottom: 1px solid #3a6d2f;
+                padding: 9px 16px 7px 16px;
+            }
+        """
+        
         self.attack_button = QPushButton("Attack")
-        katana_layout.addWidget(self.attack_button)
-        katana_group = QGroupBox("Single Attack")
-        katana_group.setLayout(katana_layout)
+        self.attack_button.setStyleSheet(attack_button_style)
+        self.attack_button.setCursor(Qt.PointingHandCursor)
+        attacks_layout.addWidget(self.attack_button)
+        
+        self.full_attack = QPushButton("Full Attack")
+        self.full_attack.setStyleSheet(attack_button_style + "QPushButton { font-size: 16px; padding: 10px 16px; }")
+        self.full_attack.setCursor(Qt.PointingHandCursor)
+        attacks_layout.addWidget(self.full_attack)
+        
+        attacks_group = QGroupBox("Attacks")
+        attacks_group.setLayout(attacks_layout)
 
         main_layout = QVBoxLayout()
         main_layout.addWidget(targeting_group)
         main_layout.addWidget(extra_group)
         main_layout.addWidget(poweratt_group)
         main_layout.addWidget(status_group)
-        main_layout.addWidget(katana_group)
-
-        self.full_attack = QPushButton("Full Attack")
-        main_layout.addWidget(self.full_attack)
+        main_layout.addWidget(attacks_group)
 
         dpr_row = QHBoxLayout()
         self.dpr_label = QLabel("Expected DPR: —")
@@ -150,6 +375,7 @@ class MainWindow(QMainWindow):
         dpr_row.addWidget(self.ac_bound)
         dpr_row.addWidget(self.damage_done)
         dpr_row.addStretch()
+        
         main_layout.addLayout(dpr_row)
 
         self.log_output = QTextEdit()
@@ -162,10 +388,61 @@ class MainWindow(QMainWindow):
         self.log_output.setMinimumWidth(800)
         main_layout.addWidget(self.log_output)
 
-        main_widget = QWidget()
-        main_widget.setLayout(main_layout)
-        self.setCentralWidget(main_widget)
-        self.resize(900, 700)
+        # Add all the main controls to the content layout
+        content_layout.addLayout(main_layout)
+        
+        # Add content widget to outer layout
+        outer_layout.addWidget(content_widget)
+        
+        container.setLayout(outer_layout)
+        self.setCentralWidget(container)
+        
+        # Add size grip for resizing (positioned in bottom-right corner)
+        from PySide6.QtGui import QPainter, QPen
+        
+        class CustomSizeGrip(QSizeGrip):
+            def paintEvent(self, event):
+                super().paintEvent(event)
+                painter = QPainter(self)
+                pen = QPen(Qt.GlobalColor.white, 2)
+                painter.setPen(pen)
+                # Draw diagonal grip lines
+                for i in range(3):
+                    offset = i * 5
+                    painter.drawLine(self.width() - 4 - offset, self.height() - 4,
+                                   self.width() - 4, self.height() - 4 - offset)
+                painter.end()
+        
+        self.size_grip = CustomSizeGrip(container)
+        self.size_grip.setFixedSize(14, 14)
+        # Style with visible background
+        self.size_grip.setStyleSheet("""
+            QSizeGrip {
+                background-color: #313244;
+                border: 1px solid #6c7086;
+                border-radius: 3px;
+            }
+        """)
+        self.size_grip.setToolTip("Drag to resize")
+        self.resize(900, 750)
+        # Force minimum size constraint
+        self.setMinimumSize(600, 500)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        
+        # Manually enforce minimum size (needed for frameless windows with QSizeGrip)
+        min_width = 600
+        min_height = 500
+        if self.width() < min_width or self.height() < min_height:
+            new_width = max(self.width(), min_width)
+            new_height = max(self.height(), min_height)
+            self.resize(new_width, new_height)
+        
+        # Position size grip in bottom-right corner with padding
+        rect = self.rect()
+        self.size_grip.move(rect.right() - self.size_grip.width() - 6, 
+                           rect.bottom() - self.size_grip.height() - 6)
 
 
 class DualWriter:
@@ -192,9 +469,11 @@ def append_log(window: MainWindow, text: str):
         bold_match = re.search(r"\*\*(.+?)\*\*", escaped)
         if bold_match:
             content = re.sub(r"\*\*(.+?)\*\*", r"\1", escaped)
-            window.log_output.append(f'<span style="font-weight:bold">{content}</span>')
+            # Gold for hits/important info
+            window.log_output.append(f'<span style="font-weight:bold; color: #f9e2af;">{content}</span>')
         else:
-            window.log_output.append(f'<span style="font-weight:normal">{escaped}</span>')
+            # Subtle text for normal logs
+            window.log_output.append(f'<span style="color: #bac2de;">{escaped}</span>')
     cursor = window.log_output.textCursor()
     cursor.movePosition(QTextCursor.End)
     window.log_output.setTextCursor(cursor)
@@ -481,6 +760,7 @@ def tracking_dialog(window: MainWindow, tavist: Tavist, tracker: ACTargetTracker
 
 def main() -> None:
     app = QApplication([])
+    app.setStyleSheet(DARK_THEME_QSS)
     window = MainWindow()
 
     tavist = Tavist()
