@@ -19,8 +19,8 @@ def make_randint(seq):
 
 
 def test_attack_action_handles_crit_confirm(monkeypatch):
-    # Attack roll 19 (threat), confirm 15, damage dice 3 (weapon) and 2 (holy)
-    monkeypatch.setattr(model, "randint", make_randint([19, 15, 3, 2]))
+    # Attack roll 19 (threat), confirm 15, normal damage 3 (weapon) and 2 (holy), crit weapon 3,3 + holy 2
+    monkeypatch.setattr(model, "randint", make_randint([19, 15, 3, 2, 3, 3, 2]))
     attack = model.AttackRoll(bonuses=[model.Bonus(5, model.BonusType.BAB)], critical_threshold=19)
     damage = model.DamageRoll(
         type=model.DamageType.SLASHING,
@@ -57,7 +57,7 @@ def test_offhand_and_twohand_scaling():
 
 def test_damage_breakdown_uses_weapon_type(monkeypatch):
     # Weapon die 2, ability 4, power attack 4 -> all bucketed under slashing
-    monkeypatch.setattr(model, "randint", make_randint([15, 2]))
+    monkeypatch.setattr(model, "randint", make_randint([15, 2, 2, 2]))
     attack = model.AttackRoll(bonuses=[model.Bonus(5)], critical_threshold=20)
     damage = model.DamageRoll(
         type=model.DamageType.SLASHING,

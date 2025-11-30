@@ -92,16 +92,13 @@ class DamageRoll(Roll):
         rolled_dice = RolledDice(self.label)
         rolled_dice.dice = self.dice
         rolled_dice.rolls = []
-        for roll in self.dice:
+        for die in self.dice:
             rolls = []
-            for n in range(roll.n):
-                rolled_die = randint(1, roll.d)
+            repeat = die.n * (2 if critical and isinstance(die, WeaponDamageDice) else 1)
+            for _ in range(repeat):
+                rolled_die = randint(1, die.d)
                 rolls.append(rolled_die)
-                rolled_dice.total += (
-                    rolled_die * 2
-                    if isinstance(roll, WeaponDamageDice) and critical
-                    else rolled_die
-                )
+                rolled_dice.total += rolled_die
             rolled_dice.rolls.append(rolls)
 
         rolled_dice.bonuses = self.bonuses
@@ -126,7 +123,7 @@ class AttackAction:
         nat_twenty = attack_die == 20
 
         damage_roll = self.damage.roll(critical=False)
-        damage_breakdown: dict[str, dict[str, int]] = {}
+        crit_damage_roll = self.damage.roll(critical=True)
         weapon_label = self.damage.type.value
         attack_mods = []
         for bonus in attack_roll.bonuses:
@@ -134,17 +131,20 @@ class AttackAction:
             attack_mods.append(f"{name}[{bonus.bonus:+}]")
         attack_mods_text = " + ".join(attack_mods) if attack_mods else "no modifiers"
 
+        def format_rolls(die: Dice, rolls: list[int]) -> str:
+            joined = ",".join(str(r) for r in rolls)
+            return f"d{die.d}({joined})"
+
         damage_dice_parts = []
         for idx, die in enumerate(damage_roll.dice):
-            rolls = ",".join(str(r) for r in damage_roll.rolls[idx])
+            label = die.label or "damage"
+            normal_rolls = format_rolls(die, damage_roll.rolls[idx])
+            crit_rolls = format_rolls(die, crit_damage_roll.rolls[idx])
             crit_tag = " *2 on crit" if isinstance(die, WeaponDamageDice) else ""
-            damage_dice_parts.append(f"{die.label}: d{die.d}({rolls}){crit_tag}")
-            normal = sum(damage_roll.rolls[idx])
-            crit_val = normal * (2 if isinstance(die, WeaponDamageDice) else 1)
-            label = weapon_label if isinstance(die, WeaponDamageDice) else die.label or "damage"
-            bucket = damage_breakdown.setdefault(label, {"normal": 0, "critical": 0})
-            bucket["normal"] += normal
-            bucket["critical"] += crit_val
+            if crit_rolls != normal_rolls:
+                damage_dice_parts.append(f"{label}: {normal_rolls}{crit_tag}; crit: {crit_rolls}")
+            else:
+                damage_dice_parts.append(f"{label}: {normal_rolls}{crit_tag}")
         damage_dice_text = " | ".join(damage_dice_parts) if damage_dice_parts else "none"
 
         damage_bonus_parts = []
@@ -163,19 +163,39 @@ class AttackAction:
                 or "unnamed"
             )
             damage_bonus_parts.append(f"{name}[{bonus.bonus:+}] *2 on crit")
-            bucket = damage_breakdown.setdefault(name, {"normal": 0, "critical": 0})
-            bucket["normal"] += bonus.bonus
-            bucket["critical"] += bonus.bonus * 2
         damage_bonus_text = " + ".join(damage_bonus_parts) if damage_bonus_parts else "none"
 
-        damage_base = 0
-        damage_crit = 0
-        for values in damage_breakdown.values():
-            damage_base += values["normal"]
-            damage_crit += values["critical"]
+        def build_breakdown(rolled: RolledDice, critical: bool) -> dict[str, int]:
+            breakdown: dict[str, int] = {}
+            for idx, die in enumerate(rolled.dice):
+                label = weapon_label if isinstance(die, WeaponDamageDice) else die.label or "damage"
+                total = sum(rolled.rolls[idx])
+                breakdown[label] = breakdown.get(label, 0) + total
+            for bonus in rolled.bonuses:
+                name = (
+                    weapon_label
+                    if bonus.type
+                    in (
+                        BonusType.ABILITY,
+                        BonusType.ENHANCEMENT,
+                        BonusType.POWER_ATTACK,
+                    )
+                    else bonus.type.value
+                    if bonus.type != BonusType.UNNAMED
+                    else bonus.label
+                    or "unnamed"
+                )
+                bonus_total = bonus.bonus * 2 if critical else bonus.bonus
+                breakdown[name] = breakdown.get(name, 0) + bonus_total
+            return breakdown
 
-        breakdown_normal = {label: vals["normal"] for label, vals in damage_breakdown.items() if vals["normal"] != 0}
-        breakdown_critical = {label: vals["critical"] for label, vals in damage_breakdown.items() if vals["critical"] != 0}
+        breakdown_normal = {label: val for label, val in build_breakdown(damage_roll, critical=False).items() if val != 0}
+        breakdown_critical = {
+            label: val for label, val in build_breakdown(crit_damage_roll, critical=True).items() if val != 0
+        }
+
+        damage_base = sum(breakdown_normal.values())
+        damage_crit = sum(breakdown_critical.values())
 
         def format_breakdown_map(mapping: dict[str, int]) -> str:
             if not mapping:
